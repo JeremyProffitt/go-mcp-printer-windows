@@ -35,6 +35,22 @@ for PLATFORM in "${PLATFORMS[@]}"; do
     echo "  -> $BUILD_DIR/$OUTPUT_NAME"
 done
 
+# Build MSI installer (requires WiX v4+: dotnet tool install --global wix)
+if command -v wix &> /dev/null; then
+    echo ""
+    echo "Building MSI installer..."
+    wix build wix/Product.wxs \
+        -o "$BUILD_DIR/$APP_NAME.msi" \
+        -b BuildDir=$BUILD_DIR \
+        -b wix \
+        -d Version=$VERSION \
+        -ext WixToolset.Firewall.wixext
+    echo "  -> $BUILD_DIR/$APP_NAME.msi"
+else
+    echo ""
+    echo "Skipping MSI build (WiX not installed). Install with: dotnet tool install --global wix"
+fi
+
 echo ""
-echo "Build complete! Binaries are in $BUILD_DIR/"
+echo "Build complete! Output in $BUILD_DIR/"
 ls -la $BUILD_DIR/

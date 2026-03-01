@@ -158,9 +158,10 @@ bash build.sh
 # Run tests
 go test -v ./...
 
-# Build MSI (requires WiX v4)
+# Build MSI (requires WiX v4+, included automatically in build.sh)
 dotnet tool install --global wix
-wix build wix/Product.wxs -o dist/go-mcp-printer-windows.msi -bindpath:BuildDir=dist
+wix extension add WixToolset.Firewall.wixext/6.0.2
+bash build.sh  # builds binaries + MSI
 ```
 
 ## Installation via MSI

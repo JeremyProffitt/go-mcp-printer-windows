@@ -2,7 +2,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
     <Package Name="Go MCP Printer"
              Manufacturer="Go MCP Printer"
-             Version="!(bind.FileVersion.MainExe)"
+             Version="$(var.Version)"
              UpgradeCode="7A8B3C4D-5E6F-7A8B-9C0D-1E2F3A4B5C6D"
              Scope="perMachine">
 
