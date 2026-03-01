@@ -61,9 +61,12 @@ jobs:
       - name: Install WiX v4
         run: dotnet tool install --global wix
 
+      - name: Generate icon
+        run: go run cmd/genicon/main.go
+
       - name: Build MSI
         run: |
-          wix build wix/Product.wxs -o dist/go-mcp-printer-windows-${{ steps.version.outputs.new_version }}.msi -bindpath:BuildDir=dist
+          wix build wix/Product.wxs -o dist/go-mcp-printer-windows-${{ steps.version.outputs.new_version }}.msi -b BuildDir=dist -b wix -d Version=${{ steps.version.outputs.new_version }} -ext WixToolset.Firewall.wixext
         continue-on-error: true
 
       - name: Generate checksums

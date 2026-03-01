@@ -45,6 +45,9 @@ func Load() (*Config, error) {
 	if cfg.HTTPPort == 0 {
 		cfg.HTTPPort = 80
 	}
+	if cfg.AdminPort == 0 {
+		cfg.AdminPort = 8787
+	}
 	if cfg.RateLimitCalls == 0 {
 		cfg.RateLimitCalls = 10
 	}

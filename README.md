@@ -24,7 +24,7 @@ bash build.sh
 ./dist/go-mcp-printer-windows-amd64.exe serve
 
 # Open admin UI
-https://localhost/admin/
+http://localhost:8787/admin/
 
 # Health check
 curl -k https://localhost/health
@@ -102,6 +102,7 @@ Config file: `C:\ProgramData\go-mcp-printer-windows\config.json`
   "allowedPrinters": [],
   "blockedPrinters": [],
   "allowedPaths": [],
+  "adminPort": 8787,
   "rateLimitCalls": 10,
   "rateLimitWindow": 20,
   "dnsEnabled": false,
@@ -127,7 +128,7 @@ OAuth 2.1:
 MCP (Bearer token required):
   POST /mcp
 
-Admin (localhost or session auth):
+Admin (port 8787, localhost or session auth):
   GET  /admin/*
   GET  /admin/api/config
   POST /admin/api/config

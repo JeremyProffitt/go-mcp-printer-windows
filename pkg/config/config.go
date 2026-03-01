@@ -28,6 +28,9 @@ type Config struct {
 	RateLimitCalls  int      `json:"rateLimitCalls"`
 	RateLimitWindow int      `json:"rateLimitWindow"`
 
+	// Admin UI
+	AdminPort int `json:"adminPort"`
+
 	// DNS / Route 53
 	DNSEnabled         bool   `json:"dnsEnabled"`
 	DNSDomain          string `json:"dnsDomain"`
@@ -47,6 +50,7 @@ func DefaultConfig() *Config {
 		LogLevel:        "info",
 		RateLimitCalls:  10,
 		RateLimitWindow: 20,
+		AdminPort:       8787,
 	}
 }
 

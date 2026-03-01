@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -133,17 +134,35 @@ func runServe() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
 
-	// Register admin UI
+	// Create admin mux on separate port
+	adminMux := http.NewServeMux()
 	adminHandler := admin.NewHandler(cfg, logger, oauthServer, version, bgCtx)
-	adminHandler.RegisterRoutes(server)
+	adminHandler.RegisterRoutes(adminMux)
 
 	fmt.Fprintf(os.Stderr, "Go MCP Printer Server v%s\n", version)
 	fmt.Fprintf(os.Stderr, "HTTPS: %s:%d\n", cfg.Domain, cfg.HTTPSPort)
 	fmt.Fprintf(os.Stderr, "Tools: %d registered\n", server.ToolCount())
-	fmt.Fprintf(os.Stderr, "Admin: https://%s/admin/\n", cfg.Domain)
+	fmt.Fprintf(os.Stderr, "Admin: http://localhost:%d/admin/\n", cfg.AdminPort)
 
 	// Run as service or foreground
 	runFunc := func(ctx context.Context) error {
+		// Start admin HTTP server
+		adminServer := &http.Server{
+			Addr:    fmt.Sprintf(":%d", cfg.AdminPort),
+			Handler: adminMux,
+		}
+		go func() {
+			if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("Admin server error: %v", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			adminServer.Shutdown(shutCtx)
+		}()
+
 		return server.RunHTTPS(
 			ctx,
 			cfg.Domain,
@@ -188,12 +207,15 @@ func runServe() {
 }
 
 func runTray() {
+	// Hide the console window (Windows only)
+	hideConsoleWindow()
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
-	tray.Run(cfg.HTTPSPort)
+	tray.Run(cfg.HTTPSPort, cfg.AdminPort)
 }
 
 func runInstall() {
@@ -213,5 +235,20 @@ func runUninstall() {
 	if err := service.Uninstall(); err != nil {
 		fmt.Fprintf(os.Stderr, "Uninstall failed: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// hideConsoleWindow hides the console window on Windows.
+// This is a no-op on other platforms.
+func hideConsoleWindow() {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	user32 := syscall.NewLazyDLL("user32.dll")
+
+	getConsoleWindow := kernel32.NewProc("GetConsoleWindow")
+	showWindow := user32.NewProc("ShowWindow")
+
+	hwnd, _, _ := getConsoleWindow.Call()
+	if hwnd != 0 {
+		showWindow.Call(hwnd, 0) // SW_HIDE = 0
 	}
 }

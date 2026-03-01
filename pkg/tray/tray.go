@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -11,11 +12,12 @@ import (
 )
 
 // Run starts the system tray icon.
-func Run(httpsPort int) {
-	systray.Run(func() { onReady(httpsPort) }, onExit)
+func Run(httpsPort, adminPort int) {
+	systray.Run(func() { onReady(httpsPort, adminPort) }, onExit)
 }
 
-func onReady(httpsPort int) {
+func onReady(httpsPort, adminPort int) {
+	systray.SetIcon(iconData)
 	systray.SetTitle("MCP Printer")
 	systray.SetTooltip("Go MCP Printer Server")
 
@@ -27,15 +29,27 @@ func onReady(httpsPort int) {
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Exit Tray", "Close tray icon (service keeps running)")
 
-	baseURL := fmt.Sprintf("https://localhost:%d", httpsPort)
+	// Health check URL (MCP HTTPS server)
+	healthURL := fmt.Sprintf("https://localhost:%d", httpsPort)
 	if httpsPort == 443 {
-		baseURL = "https://localhost"
+		healthURL = "https://localhost"
+	}
+
+	// Admin UI URL (separate HTTP server)
+	adminURL := fmt.Sprintf("http://localhost:%d", adminPort)
+
+	// HTTPS client that skips certificate verification for localhost health checks
+	httpClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
 	}
 
 	// Poll server status
 	go func() {
 		for {
-			resp, err := http.Get(baseURL + "/health")
+			resp, err := httpClient.Get(healthURL + "/health")
 			if err == nil {
 				resp.Body.Close()
 				mStatus.SetTitle("Status: Running")
@@ -50,9 +64,9 @@ func onReady(httpsPort int) {
 		for {
 			select {
 			case <-mConfig.ClickedCh:
-				openBrowser(baseURL + "/admin/")
+				openBrowser(adminURL + "/admin/")
 			case <-mLogs.ClickedCh:
-				openBrowser(baseURL + "/admin/#logs")
+				openBrowser(adminURL + "/admin/#logs")
 			case <-mQuit.ClickedCh:
 				systray.Quit()
 			}

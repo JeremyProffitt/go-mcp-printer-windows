@@ -9,10 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"net"
+	"strings"
+
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/config"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/dns"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/logging"
-	"github.com/jeremyje/go-mcp-printer-windows/pkg/mcp"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/oauth"
 )
 
@@ -58,13 +60,13 @@ func NewHandler(cfg *config.Config, logger *logging.Logger, oauthServer *oauth.S
 	return h
 }
 
-// RegisterRoutes registers admin routes on the mux.
-func (h *Handler) RegisterRoutes(s *mcp.Server) {
+// RegisterRoutes registers admin routes on the given ServeMux.
+func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	webContent, _ := fs.Sub(webFS, "web")
 	fileServer := http.FileServer(http.FS(webContent))
 
 	// Static files
-	s.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
 		// Serve index.html for /admin/ path
 		if r.URL.Path == "/admin/" || r.URL.Path == "/admin" {
 			r.URL.Path = "/index.html"
@@ -76,30 +78,30 @@ func (h *Handler) RegisterRoutes(s *mcp.Server) {
 	})
 
 	// Login
-	s.HandleFunc("/admin/login", h.handleLogin)
+	mux.HandleFunc("/admin/login", h.handleLogin)
 
 	// API endpoints (auth required for non-localhost)
-	s.HandleFunc("/admin/api/config", h.requireAuth(h.handleConfig))
-	s.HandleFunc("/admin/api/printers", h.requireAuth(h.handlePrinters))
-	s.HandleFunc("/admin/api/printers/paper-sizes", h.requireAuth(h.handlePrinterPaperSizes))
-	s.HandleFunc("/admin/api/printers/test-all", h.requireAuth(h.handlePrintTestAll))
-	s.HandleFunc("/admin/api/logs", h.requireAuth(h.handleLogs))
-	s.HandleFunc("/admin/api/status", h.requireAuth(h.handleStatus))
-	s.HandleFunc("/admin/api/oauth/clients", h.requireAuth(h.handleOAuthClients))
-	s.HandleFunc("/admin/api/oauth/clients/", h.requireAuth(h.handleOAuthClientDelete))
-	s.HandleFunc("/admin/api/oauth/keys/regenerate", h.requireAuth(h.handleKeyRegenerate))
+	mux.HandleFunc("/admin/api/config", h.requireAuth(h.handleConfig))
+	mux.HandleFunc("/admin/api/printers", h.requireAuth(h.handlePrinters))
+	mux.HandleFunc("/admin/api/printers/paper-sizes", h.requireAuth(h.handlePrinterPaperSizes))
+	mux.HandleFunc("/admin/api/printers/test-all", h.requireAuth(h.handlePrintTestAll))
+	mux.HandleFunc("/admin/api/logs", h.requireAuth(h.handleLogs))
+	mux.HandleFunc("/admin/api/status", h.requireAuth(h.handleStatus))
+	mux.HandleFunc("/admin/api/oauth/clients", h.requireAuth(h.handleOAuthClients))
+	mux.HandleFunc("/admin/api/oauth/clients/", h.requireAuth(h.handleOAuthClientDelete))
+	mux.HandleFunc("/admin/api/oauth/keys/regenerate", h.requireAuth(h.handleKeyRegenerate))
 
 	// DNS / Route 53
-	s.HandleFunc("/admin/api/dns/status", h.requireAuth(h.handleDNSStatus))
-	s.HandleFunc("/admin/api/dns/config", h.requireAuth(h.handleDNSConfig))
-	s.HandleFunc("/admin/api/dns/test", h.requireAuth(h.handleDNSTest))
-	s.HandleFunc("/admin/api/dns/policy", h.requireAuth(h.handleDNSPolicy))
+	mux.HandleFunc("/admin/api/dns/status", h.requireAuth(h.handleDNSStatus))
+	mux.HandleFunc("/admin/api/dns/config", h.requireAuth(h.handleDNSConfig))
+	mux.HandleFunc("/admin/api/dns/test", h.requireAuth(h.handleDNSTest))
+	mux.HandleFunc("/admin/api/dns/policy", h.requireAuth(h.handleDNSPolicy))
 }
 
 func (h *Handler) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Localhost access is always allowed
-		if mcp.IsLocalRequest(r) {
+		if isLocalRequest(r) {
 			next(w, r)
 			return
 		}
@@ -162,4 +164,14 @@ func generateSessionID() string {
 func checkPassword(plain, stored string) bool {
 	// TODO: implement bcrypt comparison when admin sets password
 	return plain == stored
+}
+
+// isLocalRequest checks if a request originates from localhost.
+func isLocalRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	host = strings.TrimSpace(host)
+	return host == "127.0.0.1" || host == "::1" || host == "localhost"
 }

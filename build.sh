@@ -15,6 +15,10 @@ echo "Building $APP_NAME v$VERSION..."
 rm -rf $BUILD_DIR
 mkdir -p $BUILD_DIR
 
+# Generate icon files
+echo "Generating icon..."
+go run cmd/genicon/main.go
+
 # Build for Windows platforms
 PLATFORMS=(
     "windows/amd64"
