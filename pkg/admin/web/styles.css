@@ -240,6 +240,20 @@ th {
     word-break: break-all;
 }
 
+/* Code blocks */
+code {
+    background: #f0f0f0;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 13px;
+}
+
+pre.log-viewer code {
+    background: transparent;
+    padding: 0;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .sidebar { display: none; }

@@ -32,6 +32,7 @@ const App = {
             case 'config': this.showConfig(main); break;
             case 'printers': this.showPrinters(main); break;
             case 'oauth': this.showOAuth(main); break;
+            case 'dns': this.showDNS(main); break;
             case 'logs': this.showLogs(main); break;
             case 'status': this.showStatus(main); break;
             default: this.showConfig(main);
@@ -147,7 +148,23 @@ const App = {
     },
 
     async showPrinters(el) {
-        el.innerHTML = '<div class="card"><h2>Printers</h2><div id="printer-list">Loading...</div></div>';
+        el.innerHTML = `
+            <div class="card">
+                <h2>Printers</h2>
+                <div style="margin-bottom:16px">
+                    <button id="test-all-btn" class="btn btn-primary">Print Test Page on All Printers</button>
+                    <button id="show-paper-btn" class="btn btn-secondary" style="margin-left:8px">Show Paper Sizes</button>
+                </div>
+                <div id="printer-list">Loading...</div>
+            </div>
+            <div id="paper-sizes-card" style="display:none" class="card">
+                <h2>Paper Sizes by Printer</h2>
+                <div id="paper-sizes">Loading...</div>
+            </div>`;
+
+        document.getElementById('test-all-btn').addEventListener('click', () => this.testAllPrinters());
+        document.getElementById('show-paper-btn').addEventListener('click', () => this.showPaperSizes());
+
         try {
             const resp = await fetch('/admin/api/printers');
             const printers = await resp.json();
@@ -170,6 +187,53 @@ const App = {
             document.getElementById('printer-list').innerHTML = html;
         } catch (e) {
             document.getElementById('printer-list').innerHTML = '<p class="error">Failed to load printers</p>';
+        }
+    },
+
+    async testAllPrinters() {
+        this.toast('Sending test pages to all printers...', 'success');
+        try {
+            const resp = await fetch('/admin/api/printers/test-all', { method: 'POST' });
+            const results = await resp.json();
+            let msg = 'Test page results:\n';
+            for (const [name, result] of Object.entries(results)) {
+                msg += `${name}: ${result}\n`;
+            }
+            this.toast(msg, resp.ok ? 'success' : 'error');
+        } catch (e) {
+            this.toast('Error: ' + e.message, 'error');
+        }
+    },
+
+    async showPaperSizes() {
+        const card = document.getElementById('paper-sizes-card');
+        card.style.display = 'block';
+        document.getElementById('paper-sizes').innerHTML = 'Loading paper sizes (this may take a moment)...';
+
+        try {
+            const resp = await fetch('/admin/api/printers/paper-sizes');
+            const printers = await resp.json();
+            if (!printers || printers.length === 0) {
+                document.getElementById('paper-sizes').innerHTML = '<p>No printers found</p>';
+                return;
+            }
+
+            let html = '';
+            for (const p of printers) {
+                html += `<h3 style="margin-top:16px">${p.name} ${p.isDefault ? '<span class="badge badge-success">Default</span>' : ''}</h3>`;
+                if (!p.paperSizes || p.paperSizes.length === 0) {
+                    html += '<p style="color:var(--text-muted)">No paper sizes reported</p>';
+                    continue;
+                }
+                html += '<table><thead><tr><th>Paper Size</th><th>Width (mm)</th><th>Height (mm)</th><th>Width (in)</th><th>Height (in)</th></tr></thead><tbody>';
+                for (const s of p.paperSizes) {
+                    html += `<tr><td>${s.name}</td><td>${s.widthMm}</td><td>${s.heightMm}</td><td>${s.widthIn}</td><td>${s.heightIn}</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
+            document.getElementById('paper-sizes').innerHTML = html;
+        } catch (e) {
+            document.getElementById('paper-sizes').innerHTML = '<p class="error">Failed to load paper sizes</p>';
         }
     },
 
@@ -252,14 +316,155 @@ const App = {
         try {
             const resp = await fetch('/admin/api/status');
             const status = await resp.json();
+            const cert = status.certificate || {};
+            delete status.certificate;
+
             let html = '<table>';
             for (const [key, value] of Object.entries(status)) {
                 html += `<tr><td><strong>${key}</strong></td><td>${value}</td></tr>`;
             }
             html += '</table>';
+
+            html += '<h3 style="margin-top:20px">TLS Certificate</h3><table>';
+            html += `<tr><td><strong>Mode</strong></td><td><span class="badge ${cert.mode === 'acme' ? 'badge-success' : 'badge-warning'}">${cert.mode || 'unknown'}</span></td></tr>`;
+            html += `<tr><td><strong>Domain</strong></td><td>${cert.domain || '-'}</td></tr>`;
+            html += `<tr><td><strong>Issuer</strong></td><td>${cert.issuer || '-'}</td></tr>`;
+            if (cert.notBefore) html += `<tr><td><strong>Valid From</strong></td><td>${new Date(cert.notBefore).toLocaleString()}</td></tr>`;
+            if (cert.notAfter) html += `<tr><td><strong>Valid Until</strong></td><td>${new Date(cert.notAfter).toLocaleString()}</td></tr>`;
+            html += '</table>';
+
             document.getElementById('status-info').innerHTML = html;
         } catch (e) {
             document.getElementById('status-info').innerHTML = '<p class="error">Failed to load status</p>';
+        }
+    },
+
+    async showDNS(el) {
+        el.innerHTML = `
+            <div class="card">
+                <h2>DNS / Route 53 Configuration</h2>
+                <p style="margin-bottom:16px;color:var(--text-muted)">Automatically update an AWS Route 53 A record with this machine's public IP address.</p>
+                <div id="dns-form">Loading...</div>
+            </div>
+            <div class="card">
+                <h2>Required IAM Policy</h2>
+                <p style="margin-bottom:12px;color:var(--text-muted)">Create an IAM user with this policy and enter the credentials above.</p>
+                <pre id="iam-policy" class="log-viewer" style="max-height:300px;font-size:12px">Loading...</pre>
+            </div>
+            <div class="card">
+                <h2>DNS Update Status</h2>
+                <div id="dns-status">Loading...</div>
+            </div>`;
+
+        try {
+            const [cfgResp, statusResp, policyResp] = await Promise.all([
+                fetch('/admin/api/dns/config'),
+                fetch('/admin/api/dns/status'),
+                fetch('/admin/api/dns/policy'),
+            ]);
+            const cfg = await cfgResp.json();
+            const status = await statusResp.json();
+            const policy = await policyResp.json();
+
+            document.getElementById('dns-form').innerHTML = this.renderDNSForm(cfg);
+            document.getElementById('iam-policy').textContent = policy.policy || 'Unable to load policy';
+            document.getElementById('dns-status').innerHTML = this.renderDNSStatus(status);
+
+            document.getElementById('save-dns').addEventListener('click', () => this.saveDNSConfig());
+            document.getElementById('test-dns').addEventListener('click', () => this.testDNS());
+        } catch (e) {
+            document.getElementById('dns-form').innerHTML = '<p class="error">Failed to load DNS config</p>';
+        }
+    },
+
+    renderDNSForm(cfg) {
+        return `
+            <div class="form-group">
+                <label><input type="checkbox" id="dns-enabled" ${cfg.dnsEnabled ? 'checked' : ''}> Enable automatic DNS updates</label>
+            </div>
+            <div class="form-group">
+                <label>Full Domain Name</label>
+                <input type="text" id="dns-domain" value="${cfg.dnsDomain || ''}" placeholder="printer.example.com">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>AWS Access Key ID</label>
+                    <input type="text" id="dns-accessKey" value="${cfg.awsAccessKeyId || ''}" placeholder="AKIAIOSFODNN7EXAMPLE">
+                </div>
+                <div class="form-group">
+                    <label>AWS Secret Access Key</label>
+                    <input type="password" id="dns-secretKey" value="" placeholder="${cfg.hasSecretKey ? '(saved - enter new to change)' : 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'}">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Update Interval (seconds)</label>
+                <input type="number" id="dns-interval" value="${cfg.dnsUpdateInterval || 300}" min="60" placeholder="300">
+                <span style="font-size:12px;color:var(--text-muted)">Minimum 60 seconds. Default 300 (5 minutes).</span>
+            </div>
+            <div style="display:flex;gap:12px;margin-top:8px">
+                <button id="save-dns" class="btn btn-primary">Save DNS Configuration</button>
+                <button id="test-dns" class="btn btn-secondary">Test Update Now</button>
+            </div>
+        `;
+    },
+
+    renderDNSStatus(status) {
+        const updater = status.updater || {};
+        const cfg = status.config || {};
+        let html = '<table>';
+        html += `<tr><td><strong>Enabled</strong></td><td><span class="badge ${cfg.enabled ? 'badge-success' : 'badge-warning'}">${cfg.enabled ? 'Yes' : 'No'}</span></td></tr>`;
+        html += `<tr><td><strong>Current Public IP</strong></td><td>${status.currentPublicIp || 'Unknown'}</td></tr>`;
+        if (updater.domain) html += `<tr><td><strong>DNS Domain</strong></td><td>${updater.domain}</td></tr>`;
+        if (updater.hostedZoneId) html += `<tr><td><strong>Hosted Zone ID</strong></td><td>${updater.hostedZoneId}</td></tr>`;
+        if (updater.publicIp) html += `<tr><td><strong>Last Updated IP</strong></td><td>${updater.publicIp}</td></tr>`;
+        if (updater.lastUpdate) html += `<tr><td><strong>Last Update</strong></td><td>${new Date(updater.lastUpdate).toLocaleString()}</td></tr>`;
+        if (updater.nextUpdate) html += `<tr><td><strong>Next Update</strong></td><td>${new Date(updater.nextUpdate).toLocaleString()}</td></tr>`;
+        html += `<tr><td><strong>Update Count</strong></td><td>${updater.updateCount || 0}</td></tr>`;
+        if (updater.lastError) html += `<tr><td><strong>Last Error</strong></td><td style="color:var(--danger)">${updater.lastError}</td></tr>`;
+        html += '</table>';
+        return html;
+    },
+
+    async saveDNSConfig() {
+        const cfg = {
+            dnsEnabled: document.getElementById('dns-enabled').checked,
+            dnsDomain: document.getElementById('dns-domain').value,
+            awsAccessKeyId: document.getElementById('dns-accessKey').value,
+            awsSecretAccessKey: document.getElementById('dns-secretKey').value,
+            dnsUpdateInterval: parseInt(document.getElementById('dns-interval').value) || 300,
+        };
+
+        try {
+            const resp = await fetch('/admin/api/dns/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(cfg),
+            });
+            const result = await resp.json();
+            if (resp.ok) {
+                this.toast(result.error || 'DNS configuration saved', result.error ? 'error' : 'success');
+                this.showDNS(document.querySelector('.main'));
+            } else {
+                this.toast('Failed to save DNS config', 'error');
+            }
+        } catch (e) {
+            this.toast('Error: ' + e.message, 'error');
+        }
+    },
+
+    async testDNS() {
+        this.toast('Testing DNS update...', 'success');
+        try {
+            const resp = await fetch('/admin/api/dns/test', { method: 'POST' });
+            const result = await resp.json();
+            if (resp.ok) {
+                this.toast(result.result || 'DNS update successful', 'success');
+                this.showDNS(document.querySelector('.main'));
+            } else {
+                this.toast('DNS test failed: ' + (result.message || resp.statusText), 'error');
+            }
+        } catch (e) {
+            this.toast('Error: ' + e.message, 'error');
         }
     },
 

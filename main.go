@@ -129,8 +129,12 @@ func runServe() {
 	registry := tools.NewRegistry(cfg, logger, version)
 	registry.RegisterAll(server)
 
+	// Create context for background tasks
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+
 	// Register admin UI
-	adminHandler := admin.NewHandler(cfg, logger, oauthServer, version)
+	adminHandler := admin.NewHandler(cfg, logger, oauthServer, version, bgCtx)
 	adminHandler.RegisterRoutes(server)
 
 	fmt.Fprintf(os.Stderr, "Go MCP Printer Server v%s\n", version)

@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -191,6 +193,37 @@ func (s *Server) handleMCPEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// CertInfo holds information about the current TLS certificate.
+type CertInfo struct {
+	Domain    string `json:"domain"`
+	Issuer    string `json:"issuer"`
+	NotBefore string `json:"notBefore"`
+	NotAfter  string `json:"notAfter"`
+	Mode      string `json:"mode"` // "acme" or "self-signed"
+}
+
+// certInfo stores the current certificate details (set during startup).
+var (
+	currentCertInfo   *CertInfo
+	currentCertInfoMu sync.RWMutex
+)
+
+// GetCertInfo returns the current TLS certificate info.
+func GetCertInfo() *CertInfo {
+	currentCertInfoMu.RLock()
+	defer currentCertInfoMu.RUnlock()
+	if currentCertInfo == nil {
+		return &CertInfo{Mode: "unknown"}
+	}
+	return currentCertInfo
+}
+
+func setCertInfo(info *CertInfo) {
+	currentCertInfoMu.Lock()
+	defer currentCertInfoMu.Unlock()
+	currentCertInfo = info
+}
+
 // RunHTTPS starts the HTTPS server with ACME or self-signed certificates.
 func (s *Server) RunHTTPS(ctx context.Context, domain string, httpsPort, httpPort int, useSelfSigned bool, acmeEmail string, certDir string) error {
 	mux := s.BuildMux()
@@ -210,31 +243,82 @@ func (s *Server) RunHTTPS(ctx context.Context, domain string, httpsPort, httpPor
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
 		}
+
+		// Parse the cert to extract info
+		if parsed, err := x509.ParseCertificate(cert.Certificate[0]); err == nil {
+			setCertInfo(&CertInfo{
+				Domain:    domain,
+				Issuer:    parsed.Issuer.CommonName,
+				NotBefore: parsed.NotBefore.Format(time.RFC3339),
+				NotAfter:  parsed.NotAfter.Format(time.RFC3339),
+				Mode:      "self-signed",
+			})
+		}
+
+		log.Printf("[TLS] Using self-signed certificate for %q", domain)
 	} else {
 		// ACME / Let's Encrypt
+		if err := os.MkdirAll(certDir, 0700); err != nil {
+			return fmt.Errorf("create cert cache dir %s: %w", certDir, err)
+		}
+
 		mgr := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(domain),
 			Cache:      autocert.DirCache(certDir),
 			Email:      acmeEmail,
 		}
+
 		tlsConfig = mgr.TLSConfig()
 		tlsConfig.MinVersion = tls.VersionTLS12
 
-		// Start HTTP server for ACME challenges + redirect
-		httpMux := http.NewServeMux()
-		httpMux.Handle("/.well-known/acme-challenge/", mgr.HTTPHandler(nil))
-		httpMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Wrap GetCertificate to capture cert info on each fetch
+		origGetCert := tlsConfig.GetCertificate
+		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			cert, err := origGetCert(hello)
+			if err != nil {
+				log.Printf("[TLS] ACME GetCertificate error for %q: %v", hello.ServerName, err)
+				return nil, err
+			}
+			if cert != nil && len(cert.Certificate) > 0 {
+				if parsed, parseErr := x509.ParseCertificate(cert.Certificate[0]); parseErr == nil {
+					setCertInfo(&CertInfo{
+						Domain:    domain,
+						Issuer:    parsed.Issuer.CommonName,
+						NotBefore: parsed.NotBefore.Format(time.RFC3339),
+						NotAfter:  parsed.NotAfter.Format(time.RFC3339),
+						Mode:      "acme",
+					})
+				}
+			}
+			return cert, nil
+		}
+
+		log.Printf("[TLS] Using Let's Encrypt ACME for domain %q (email: %s)", domain, acmeEmail)
+		log.Printf("[TLS] Certificate cache: %s", certDir)
+
+		setCertInfo(&CertInfo{
+			Domain: domain,
+			Mode:   "acme",
+			Issuer: "pending (Let's Encrypt)",
+		})
+
+		// Start HTTP server for ACME HTTP-01 challenges + redirect to HTTPS.
+		// mgr.HTTPHandler wraps the fallback: it intercepts challenge requests
+		// and passes everything else to the redirect handler.
+		redirectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			target := "https://" + r.Host + r.URL.RequestURI()
 			http.Redirect(w, r, target, http.StatusMovedPermanently)
 		})
 
 		httpServer := &http.Server{
 			Addr:    httpAddr,
-			Handler: httpMux,
+			Handler: mgr.HTTPHandler(redirectHandler),
 		}
 		go func() {
+			log.Printf("[HTTP] Listening on %s (ACME challenges + HTTPS redirect)", httpAddr)
 			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("[HTTP] Server error: %v", err)
 				if s.onError != nil {
 					s.onError(err, "http_redirect_server")
 				}
@@ -258,6 +342,8 @@ func (s *Server) RunHTTPS(ctx context.Context, domain string, httpsPort, httpPor
 	if err != nil {
 		return fmt.Errorf("listen HTTPS on %s: %w", httpsAddr, err)
 	}
+
+	log.Printf("[HTTPS] Listening on %s", httpsAddr)
 
 	go func() {
 		<-ctx.Done()

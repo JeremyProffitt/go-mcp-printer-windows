@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/config"
+	"github.com/jeremyje/go-mcp-printer-windows/pkg/dns"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/logging"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/mcp"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/oauth"
@@ -25,18 +27,35 @@ type Handler struct {
 	// Sessions
 	sessionMu sync.RWMutex
 	sessions  map[string]time.Time
+
+	// DNS updater
+	dnsUpdater *dns.Updater
+	dnsCtx     context.Context
 }
 
 // NewHandler creates a new admin handler.
-func NewHandler(cfg *config.Config, logger *logging.Logger, oauthServer *oauth.Server, version string) *Handler {
-	return &Handler{
+func NewHandler(cfg *config.Config, logger *logging.Logger, oauthServer *oauth.Server, version string, ctx context.Context) *Handler {
+	h := &Handler{
 		cfg:         cfg,
 		logger:      logger,
 		oauthServer: oauthServer,
 		version:     version,
 		startTime:   time.Now(),
 		sessions:    make(map[string]time.Time),
+		dnsUpdater:  dns.NewUpdater(func(msg string) { logger.Info("[DNS] %s", msg) }),
+		dnsCtx:      ctx,
 	}
+
+	// Auto-start DNS updater if configured
+	if cfg.DNSEnabled && cfg.AWSAccessKeyID != "" && cfg.AWSSecretAccessKey != "" && cfg.DNSDomain != "" {
+		if err := h.dnsUpdater.Start(ctx, cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.DNSDomain, cfg.DNSUpdateInterval); err != nil {
+			logger.Error("Failed to auto-start DNS updater: %v", err)
+		} else {
+			logger.Info("DNS updater auto-started for %s", cfg.DNSDomain)
+		}
+	}
+
+	return h
 }
 
 // RegisterRoutes registers admin routes on the mux.
@@ -62,11 +81,19 @@ func (h *Handler) RegisterRoutes(s *mcp.Server) {
 	// API endpoints (auth required for non-localhost)
 	s.HandleFunc("/admin/api/config", h.requireAuth(h.handleConfig))
 	s.HandleFunc("/admin/api/printers", h.requireAuth(h.handlePrinters))
+	s.HandleFunc("/admin/api/printers/paper-sizes", h.requireAuth(h.handlePrinterPaperSizes))
+	s.HandleFunc("/admin/api/printers/test-all", h.requireAuth(h.handlePrintTestAll))
 	s.HandleFunc("/admin/api/logs", h.requireAuth(h.handleLogs))
 	s.HandleFunc("/admin/api/status", h.requireAuth(h.handleStatus))
 	s.HandleFunc("/admin/api/oauth/clients", h.requireAuth(h.handleOAuthClients))
 	s.HandleFunc("/admin/api/oauth/clients/", h.requireAuth(h.handleOAuthClientDelete))
 	s.HandleFunc("/admin/api/oauth/keys/regenerate", h.requireAuth(h.handleKeyRegenerate))
+
+	// DNS / Route 53
+	s.HandleFunc("/admin/api/dns/status", h.requireAuth(h.handleDNSStatus))
+	s.HandleFunc("/admin/api/dns/config", h.requireAuth(h.handleDNSConfig))
+	s.HandleFunc("/admin/api/dns/test", h.requireAuth(h.handleDNSTest))
+	s.HandleFunc("/admin/api/dns/policy", h.requireAuth(h.handleDNSPolicy))
 }
 
 func (h *Handler) requireAuth(next http.HandlerFunc) http.HandlerFunc {

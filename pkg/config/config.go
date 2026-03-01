@@ -27,6 +27,13 @@ type Config struct {
 	AdminPassword   string   `json:"adminPassword"`
 	RateLimitCalls  int      `json:"rateLimitCalls"`
 	RateLimitWindow int      `json:"rateLimitWindow"`
+
+	// DNS / Route 53
+	DNSEnabled         bool   `json:"dnsEnabled"`
+	DNSDomain          string `json:"dnsDomain"`
+	AWSAccessKeyID     string `json:"awsAccessKeyId"`
+	AWSSecretAccessKey string `json:"awsSecretAccessKey"`
+	DNSUpdateInterval  int    `json:"dnsUpdateInterval"` // seconds
 }
 
 // DefaultConfig returns a Config with sensible defaults.

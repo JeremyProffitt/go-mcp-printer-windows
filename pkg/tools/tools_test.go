@@ -15,8 +15,8 @@ func TestRegisterAll(t *testing.T) {
 	r := NewRegistry(cfg, nil, "1.0.0")
 	r.RegisterAll(s)
 
-	if s.ToolCount() != 14 {
-		t.Errorf("Expected 14 tools, got %d", s.ToolCount())
+	if s.ToolCount() != 30 {
+		t.Errorf("Expected 30 tools, got %d", s.ToolCount())
 	}
 
 	tools := s.Tools()
@@ -35,6 +35,22 @@ func TestRegisterAll(t *testing.T) {
 		"set_default_printer",
 		"print_test_page",
 		"get_printer_server_status",
+		"list_printer_paper_sizes",
+		"print_all_test_pages",
+		"get_ink_toner_levels",
+		"get_print_history",
+		"test_printer_connectivity",
+		"purge_print_queue",
+		"restart_print_job",
+		"add_network_printer",
+		"remove_printer",
+		"set_print_defaults",
+		"share_printer",
+		"print_html",
+		"print_url",
+		"print_md",
+		"print_multiple_files",
+		"get_printer_errors",
 	}
 
 	nameSet := make(map[string]bool)

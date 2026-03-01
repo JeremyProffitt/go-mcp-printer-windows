@@ -4,12 +4,13 @@ A remote HTTPS-only MCP (Model Context Protocol) server for Windows printer mana
 
 ## Features
 
-- **14 MCP Tools** for discovering, configuring, and managing print jobs
+- **30 MCP Tools** for discovering, configuring, monitoring, and managing print jobs
 - **OAuth 2.1** with PKCE, dynamic client registration, JWT tokens
 - **HTTPS-only** with ACME/Let's Encrypt or self-signed certificates
+- **AWS Route 53** dynamic DNS updater with automatic public IP detection
 - **Windows Service** with auto-start and failure recovery
 - **System Tray** icon for easy management
-- **Admin Web UI** for configuration, printer status, OAuth clients, and logs
+- **Admin Web UI** for configuration, printer status, DNS, OAuth clients, and logs
 - **MSI Installer** with service, tray auto-start, and firewall rules
 - **3 external dependencies** only (golang.org/x/sys, golang.org/x/crypto, fyne.io/systray)
 
@@ -57,6 +58,22 @@ go-mcp-printer-windows.exe version    # Print version
 | 12 | `set_default_printer` | write | Set the default printer |
 | 13 | `print_test_page` | write | Print a Windows test page |
 | 14 | `get_printer_server_status` | read-only | Server version, uptime, config |
+| 15 | `list_printer_paper_sizes` | read-only | List all printers with supported paper sizes (mm/in) |
+| 16 | `print_all_test_pages` | write | Print test page on every printer |
+| 17 | `get_ink_toner_levels` | read-only | Get ink/toner supply levels (SNMP for network printers) |
+| 18 | `get_print_history` | read-only | Get print history from Windows event log |
+| 19 | `test_printer_connectivity` | read-only | Test printer connectivity: WMI, ping, port 9100 |
+| 20 | `purge_print_queue` | destructive | Remove all jobs from a printer's queue |
+| 21 | `restart_print_job` | write | Restart a specific print job |
+| 22 | `add_network_printer` | write | Add a network printer by UNC path or IP address |
+| 23 | `remove_printer` | destructive | Remove an installed printer |
+| 24 | `set_print_defaults` | write | Set default print configuration (paper, color, duplex) |
+| 25 | `share_printer` | write | Enable or disable printer sharing |
+| 26 | `print_html` | write | Print HTML content via Windows built-in renderer |
+| 27 | `print_url` | write | Download and print a web page |
+| 28 | `print_md` | write | Print Markdown (converted to styled HTML) |
+| 29 | `print_multiple_files` | write | Print multiple files in batch (max 50) |
+| 30 | `get_printer_errors` | read-only | Get error state and recent error events |
 
 ## OAuth 2.1 Flow
 
@@ -86,7 +103,12 @@ Config file: `C:\ProgramData\go-mcp-printer-windows\config.json`
   "blockedPrinters": [],
   "allowedPaths": [],
   "rateLimitCalls": 10,
-  "rateLimitWindow": 20
+  "rateLimitWindow": 20,
+  "dnsEnabled": false,
+  "dnsDomain": "printer.example.com",
+  "awsAccessKeyId": "",
+  "awsSecretAccessKey": "",
+  "dnsUpdateInterval": 300
 }
 ```
 
@@ -110,11 +132,18 @@ Admin (localhost or session auth):
   GET  /admin/api/config
   POST /admin/api/config
   GET  /admin/api/printers
+  GET  /admin/api/printers/paper-sizes
+  POST /admin/api/printers/test-all
   GET  /admin/api/logs
   GET  /admin/api/status
   GET  /admin/api/oauth/clients
   DELETE /admin/api/oauth/clients/:id
   POST /admin/api/oauth/keys/regenerate
+  GET  /admin/api/dns/status
+  GET  /admin/api/dns/config
+  POST /admin/api/dns/config
+  POST /admin/api/dns/test
+  GET  /admin/api/dns/policy
 
 Health (no auth):
   GET  /health
