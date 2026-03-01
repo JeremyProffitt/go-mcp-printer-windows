@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
-
-	"net"
-	"strings"
 
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/config"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/dns"
@@ -65,15 +65,22 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	webContent, _ := fs.Sub(webFS, "web")
 	fileServer := http.FileServer(http.FS(webContent))
 
-	// Static files
+	// Static files — serve index.html directly for the root path to avoid
+	// http.FileServer's automatic /index.html → ./ redirect loop.
 	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
-		// Serve index.html for /admin/ path
 		if r.URL.Path == "/admin/" || r.URL.Path == "/admin" {
-			r.URL.Path = "/index.html"
-		} else {
-			// Strip /admin/ prefix for file serving
-			r.URL.Path = r.URL.Path[len("/admin"):]
+			f, err := webContent.Open("index.html")
+			if err != nil {
+				http.Error(w, "Not Found", http.StatusNotFound)
+				return
+			}
+			defer f.Close()
+			stat, _ := f.Stat()
+			http.ServeContent(w, r, "index.html", stat.ModTime(), f.(io.ReadSeeker))
+			return
 		}
+		// Strip /admin/ prefix for file serving
+		r.URL.Path = r.URL.Path[len("/admin"):]
 		fileServer.ServeHTTP(w, r)
 	})
 
