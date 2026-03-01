@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login - Go MCP Printer</title>
+    <link rel="stylesheet" href="/admin/styles.css">
+</head>
+<body>
+    <div class="login-container">
+        <h1>Go MCP Printer</h1>
+        <p>Admin Login</p>
+        <form method="POST" action="/admin/login">
+            <input type="password" name="password" placeholder="Admin Password" required autofocus>
+            <button type="submit">Login</button>
+        </form>
+        <div id="error" class="error" style="display:none"></div>
+    </div>
+</body>
+</html>

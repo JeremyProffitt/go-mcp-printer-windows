@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest_tag=$LATEST_TAG"
+
+          # Parse version components
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+          # Increment patch
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          NEW_TAG="v${NEW_VERSION}"
+
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "Version: $NEW_VERSION (tag: $NEW_TAG)"
+
+      - name: Test
+        run: go test -v ./...
+
+      - name: Build amd64
+        run: |
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "0"
+          go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.new_version }}" -o dist/go-mcp-printer-windows-amd64.exe .
+
+      - name: Build arm64
+        run: |
+          $env:GOOS = "windows"
+          $env:GOARCH = "arm64"
+          $env:CGO_ENABLED = "0"
+          go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.new_version }}" -o dist/go-mcp-printer-windows-arm64.exe .
+
+      - name: Install WiX v4
+        run: dotnet tool install --global wix
+
+      - name: Build MSI
+        run: |
+          wix build wix/Product.wxs -o dist/go-mcp-printer-windows-${{ steps.version.outputs.new_version }}.msi -bindpath:BuildDir=dist
+        continue-on-error: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.exe *.msi 2>/dev/null > checksums.sha256 || sha256sum *.exe > checksums.sha256
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.new_tag }}
+          name: Release ${{ steps.version.outputs.new_tag }}
+          body: |
+            ## Go MCP Printer Windows ${{ steps.version.outputs.new_tag }}
+
+            ### Downloads
+            - `go-mcp-printer-windows-amd64.exe` — 64-bit Intel/AMD
+            - `go-mcp-printer-windows-arm64.exe` — 64-bit ARM
+            - `go-mcp-printer-windows-*.msi` — Windows Installer (if available)
+
+            ### Changes
+            See commit history for details.
+          files: |
+            dist/go-mcp-printer-windows-amd64.exe
+            dist/go-mcp-printer-windows-arm64.exe
+            dist/*.msi
+            dist/checksums.sha256
+          draft: false
+          prerelease: false
+
+      - name: Prune old releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Keep the 5 most recent releases, delete the rest
+          RELEASES=$(gh release list --limit 100 --json tagName -q '.[].tagName')
+          COUNT=0
+          for TAG in $RELEASES; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -gt 5 ]; then
+              echo "Deleting old release: $TAG"
+              gh release delete "$TAG" --yes --cleanup-tag || true
+            fi
+          done

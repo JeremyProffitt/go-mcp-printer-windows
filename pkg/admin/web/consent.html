@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authorize - Go MCP Printer</title>
+    <link rel="stylesheet" href="/admin/styles.css">
+</head>
+<body>
+    <div class="consent-container">
+        <h1>Authorize Application</h1>
+        <p>An application wants to access your printer server.</p>
+        <div class="scope-info">
+            <strong>Requested Permissions:</strong>
+            <ul>
+                <li>List and manage printers</li>
+                <li>Submit and manage print jobs</li>
+            </ul>
+        </div>
+        <div class="buttons">
+            <button class="btn-deny" onclick="deny()">Deny</button>
+            <button class="btn-approve" onclick="approve()">Approve</button>
+        </div>
+    </div>
+</body>
+</html>

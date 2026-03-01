@@ -1,0 +1,17 @@
+Go MCP Printer - Test Page
+
+This is a sample text file for testing the print_text and print_file tools.
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam,
+quis nostrud exercitation ullamco laboris.
+
+Printer Information:
+- Tool: print_file
+- Format: Plain Text
+- Date: Test document
+
+1234567890
+ABCDEFGHIJKLMNOPQRSTUVWXYZ
+abcdefghijklmnopqrstuvwxyz
+!@#$%^&*()_+-=[]{}|;':\",./<>?

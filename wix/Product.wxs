@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+    <Package Name="Go MCP Printer"
+             Manufacturer="Go MCP Printer"
+             Version="!(bind.FileVersion.MainExe)"
+             UpgradeCode="7A8B3C4D-5E6F-7A8B-9C0D-1E2F3A4B5C6D"
+             Scope="perMachine">
+
+        <MajorUpgrade DowngradeErrorMessage="A newer version of Go MCP Printer is already installed." />
+        <MediaTemplate EmbedCab="yes" />
+
+        <Icon Id="AppIcon" SourceFile="assets\icon.ico" />
+        <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+
+        <StandardDirectory Id="ProgramFiles64Folder">
+            <Directory Id="INSTALLFOLDER" Name="Go MCP Printer">
+                <Component Id="MainExecutable" Guid="1A2B3C4D-5E6F-7A8B-9C0D-1E2F3A4B5C6E">
+                    <File Id="MainExe" Source="!(bindpath.BuildDir)\go-mcp-printer-windows-amd64.exe"
+                          Name="go-mcp-printer-windows.exe" KeyPath="yes" />
+
+                    <!-- Install Windows Service -->
+                    <ServiceInstall Id="GoMCPPrinterService"
+                                    Name="GoMCPPrinter"
+                                    DisplayName="Go MCP Printer Server"
+                                    Description="MCP server for Windows printer management over HTTPS"
+                                    Type="ownProcess"
+                                    Start="auto"
+                                    Account="NT AUTHORITY\LocalService"
+                                    ErrorControl="normal"
+                                    Arguments="serve">
+                        <ServiceConfig DelayedAutoStart="no"
+                                       OnInstall="yes"
+                                       OnReinstall="yes" />
+                    </ServiceInstall>
+
+                    <ServiceControl Id="GoMCPPrinterServiceControl"
+                                    Name="GoMCPPrinter"
+                                    Start="install"
+                                    Stop="both"
+                                    Remove="uninstall"
+                                    Wait="yes" />
+                </Component>
+            </Directory>
+        </StandardDirectory>
+
+        <!-- ProgramData directory for config, keys, logs -->
+        <StandardDirectory Id="CommonAppDataFolder">
+            <Directory Id="DataFolder" Name="go-mcp-printer-windows">
+                <Component Id="DataDirectory" Guid="2B3C4D5E-6F7A-8B9C-0D1E-2F3A4B5C6D7E">
+                    <CreateFolder />
+                    <RemoveFolder Id="RemoveDataFolder" On="uninstall" />
+                </Component>
+                <Directory Id="LogsFolder" Name="logs">
+                    <Component Id="LogsDirectory" Guid="3C4D5E6F-7A8B-9C0D-1E2F-3A4B5C6D7E8F">
+                        <CreateFolder />
+                    </Component>
+                </Directory>
+            </Directory>
+        </StandardDirectory>
+
+        <!-- Start Menu shortcut for tray -->
+        <StandardDirectory Id="ProgramMenuFolder">
+            <Directory Id="ProgramMenuDir" Name="Go MCP Printer">
+                <Component Id="StartMenuShortcut" Guid="4D5E6F7A-8B9C-0D1E-2F3A-4B5C6D7E8F9A">
+                    <Shortcut Id="TrayShortcut"
+                              Name="Go MCP Printer Tray"
+                              Description="System tray management for Go MCP Printer"
+                              Target="[INSTALLFOLDER]go-mcp-printer-windows.exe"
+                              Arguments="tray"
+                              Icon="AppIcon" />
+                    <RemoveFolder Id="RemoveProgramMenuDir" On="uninstall" />
+                    <RegistryValue Root="HKCU"
+                                   Key="Software\Go MCP Printer"
+                                   Name="installed" Type="integer" Value="1"
+                                   KeyPath="yes" />
+                </Component>
+            </Directory>
+        </StandardDirectory>
+
+        <!-- Auto-start tray on login -->
+        <Component Id="TrayAutoStart" Directory="INSTALLFOLDER" Guid="5E6F7A8B-9C0D-1E2F-3A4B-5C6D7E8F9A0B">
+            <RegistryValue Root="HKCU"
+                           Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                           Name="GoMCPPrinterTray"
+                           Type="string"
+                           Value="&quot;[INSTALLFOLDER]go-mcp-printer-windows.exe&quot; tray"
+                           KeyPath="yes" />
+        </Component>
+
+        <!-- Firewall rules -->
+        <Component Id="FirewallRules" Directory="INSTALLFOLDER" Guid="6F7A8B9C-0D1E-2F3A-4B5C-6D7E8F9A0B1C">
+            <fw:FirewallException xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"
+                                  Id="FwHTTPS"
+                                  Name="Go MCP Printer HTTPS"
+                                  Port="443"
+                                  Protocol="tcp"
+                                  Scope="any"
+                                  Profile="all" />
+            <fw:FirewallException xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"
+                                  Id="FwHTTP"
+                                  Name="Go MCP Printer HTTP"
+                                  Port="80"
+                                  Protocol="tcp"
+                                  Scope="any"
+                                  Profile="all" />
+            <RegistryValue Root="HKLM"
+                           Key="Software\Go MCP Printer"
+                           Name="firewall" Type="integer" Value="1"
+                           KeyPath="yes" />
+        </Component>
+
+        <Feature Id="ProductFeature" Title="Go MCP Printer" Level="1">
+            <ComponentRef Id="MainExecutable" />
+            <ComponentRef Id="DataDirectory" />
+            <ComponentRef Id="LogsDirectory" />
+            <ComponentRef Id="StartMenuShortcut" />
+            <ComponentRef Id="TrayAutoStart" />
+            <ComponentRef Id="FirewallRules" />
+        </Feature>
+    </Package>
+</Wix>

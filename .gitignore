@@ -1,0 +1,23 @@
+dist/
+*.exe
+*.msi
+*.pdb
+*.obj
+*.log
+*.pem
+config.json
+oauth_*.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Go
+vendor/
