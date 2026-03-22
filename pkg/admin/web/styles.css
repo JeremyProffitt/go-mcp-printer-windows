@@ -254,6 +254,31 @@ pre.log-viewer code {
     padding: 0;
 }
 
+/* Printer checklists */
+.printer-checklist {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 16px;
+}
+
+.checklist-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-weight: 400;
+    margin-bottom: 0;
+    cursor: pointer;
+}
+
+.checklist-item input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .sidebar { display: none; }

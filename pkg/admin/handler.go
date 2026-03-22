@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"io"
@@ -13,51 +12,32 @@ import (
 	"time"
 
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/config"
-	"github.com/jeremyje/go-mcp-printer-windows/pkg/dns"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/logging"
-	"github.com/jeremyje/go-mcp-printer-windows/pkg/oauth"
 )
 
 // Handler serves the admin UI and API.
 type Handler struct {
-	cfg         *config.Config
-	logger      *logging.Logger
-	oauthServer *oauth.Server
-	version     string
-	startTime   time.Time
+	cfg       *config.Config
+	logger    *logging.Logger
+	version   string
+	startTime time.Time
+	restartCh chan struct{}
 
 	// Sessions
 	sessionMu sync.RWMutex
 	sessions  map[string]time.Time
-
-	// DNS updater
-	dnsUpdater *dns.Updater
-	dnsCtx     context.Context
 }
 
 // NewHandler creates a new admin handler.
-func NewHandler(cfg *config.Config, logger *logging.Logger, oauthServer *oauth.Server, version string, ctx context.Context) *Handler {
-	h := &Handler{
-		cfg:         cfg,
-		logger:      logger,
-		oauthServer: oauthServer,
-		version:     version,
-		startTime:   time.Now(),
-		sessions:    make(map[string]time.Time),
-		dnsUpdater:  dns.NewUpdater(func(msg string) { logger.Info("[DNS] %s", msg) }),
-		dnsCtx:      ctx,
+func NewHandler(cfg *config.Config, logger *logging.Logger, version string, restartCh chan struct{}) *Handler {
+	return &Handler{
+		cfg:       cfg,
+		logger:    logger,
+		version:   version,
+		startTime: time.Now(),
+		restartCh: restartCh,
+		sessions:  make(map[string]time.Time),
 	}
-
-	// Auto-start DNS updater if configured
-	if cfg.DNSEnabled && cfg.AWSAccessKeyID != "" && cfg.AWSSecretAccessKey != "" && cfg.DNSDomain != "" {
-		if err := h.dnsUpdater.Start(ctx, cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.DNSDomain, cfg.DNSUpdateInterval); err != nil {
-			logger.Error("Failed to auto-start DNS updater: %v", err)
-		} else {
-			logger.Info("DNS updater auto-started for %s", cfg.DNSDomain)
-		}
-	}
-
-	return h
 }
 
 // RegisterRoutes registers admin routes on the given ServeMux.
@@ -94,15 +74,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/printers/test-all", h.requireAuth(h.handlePrintTestAll))
 	mux.HandleFunc("/admin/api/logs", h.requireAuth(h.handleLogs))
 	mux.HandleFunc("/admin/api/status", h.requireAuth(h.handleStatus))
-	mux.HandleFunc("/admin/api/oauth/clients", h.requireAuth(h.handleOAuthClients))
-	mux.HandleFunc("/admin/api/oauth/clients/", h.requireAuth(h.handleOAuthClientDelete))
-	mux.HandleFunc("/admin/api/oauth/keys/regenerate", h.requireAuth(h.handleKeyRegenerate))
-
-	// DNS / Route 53
-	mux.HandleFunc("/admin/api/dns/status", h.requireAuth(h.handleDNSStatus))
-	mux.HandleFunc("/admin/api/dns/config", h.requireAuth(h.handleDNSConfig))
-	mux.HandleFunc("/admin/api/dns/test", h.requireAuth(h.handleDNSTest))
-	mux.HandleFunc("/admin/api/dns/policy", h.requireAuth(h.handleDNSPolicy))
+	mux.HandleFunc("/admin/api/restart", h.requireAuth(h.handleRestart))
 }
 
 func (h *Handler) requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -152,7 +124,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionID,
 		Path:     "/admin",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   false,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})

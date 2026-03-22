@@ -11,9 +11,6 @@ import (
 	"time"
 
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/config"
-	"github.com/jeremyje/go-mcp-printer-windows/pkg/dns"
-	"github.com/jeremyje/go-mcp-printer-windows/pkg/mcp"
-	"github.com/jeremyje/go-mcp-printer-windows/pkg/oauth"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/printer"
 )
 
@@ -38,6 +35,9 @@ func (h *Handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 			newCfg.LogDir = h.cfg.LogDir
 		}
 
+		// Detect if ports changed — restart will be needed
+		needsRestart := h.cfg.Port != newCfg.Port || h.cfg.AdminPort != newCfg.AdminPort
+
 		if err := config.Save(&newCfg); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to save: %s", err), http.StatusInternalServerError)
 			return
@@ -45,11 +45,44 @@ func (h *Handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 		*h.cfg = newCfg
 		h.logger.Info("Config updated via admin API")
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":   "ok",
+			"restart":  needsRestart,
+		})
+
+		// Auto-restart when ports change
+		if needsRestart {
+			h.logger.Info("Port configuration changed, triggering restart")
+			h.triggerRestart()
+		}
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) handleRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	h.logger.Info("Restart requested via admin API")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "restarting"})
+
+	// Trigger restart after response is sent
+	go h.triggerRestart()
+}
+
+func (h *Handler) triggerRestart() {
+	time.Sleep(500 * time.Millisecond) // let the HTTP response flush
+	select {
+	case h.restartCh <- struct{}{}:
+	default:
+		// restart already pending
 	}
 }
 
@@ -143,238 +176,20 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	uptime := time.Since(h.startTime)
-	certInfo := mcp.GetCertInfo()
 	status := map[string]interface{}{
-		"version":       h.version,
-		"uptime":        uptime.String(),
-		"domain":        h.cfg.Domain,
-		"httpsPort":     h.cfg.HTTPSPort,
-		"httpPort":      h.cfg.HTTPPort,
-		"useSelfSigned": h.cfg.UseSelfSigned,
-		"goVersion":     runtime.Version(),
-		"os":            runtime.GOOS,
-		"arch":          runtime.GOARCH,
-		"numCPU":        runtime.NumCPU(),
-		"pid":           os.Getpid(),
-		"logLevel":      h.cfg.LogLevel,
-		"certificate":   certInfo,
+		"version":  h.version,
+		"uptime":   uptime.String(),
+		"domain":   h.cfg.Domain,
+		"port":     h.cfg.Port,
+		"goVersion": runtime.Version(),
+		"os":       runtime.GOOS,
+		"arch":     runtime.GOARCH,
+		"numCPU":   runtime.NumCPU(),
+		"pid":      os.Getpid(),
+		"logLevel": h.cfg.LogLevel,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
 
-func (h *Handler) handleOAuthClients(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.oauthServer == nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]*oauth.OAuthClient{})
-		return
-	}
-
-	clients := h.oauthServer.Store().ListClients()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(clients)
-}
-
-func (h *Handler) handleOAuthClientDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Extract client ID from path: /admin/api/oauth/clients/{id}
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 6 {
-		http.Error(w, "Missing client ID", http.StatusBadRequest)
-		return
-	}
-	clientID := parts[len(parts)-1]
-
-	if h.oauthServer == nil {
-		http.Error(w, "OAuth not configured", http.StatusInternalServerError)
-		return
-	}
-
-	if err := h.oauthServer.Store().DeleteClient(clientID); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to delete client: %s", err), http.StatusInternalServerError)
-		return
-	}
-
-	h.logger.Info("OAuth client deleted via admin: %s", clientID)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func (h *Handler) handleKeyRegenerate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	keyPath := config.OAuthKeyPath()
-	if _, err := oauth.RegenerateKey(keyPath); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to regenerate keys: %s", err), http.StatusInternalServerError)
-		return
-	}
-
-	h.logger.Info("OAuth signing keys regenerated via admin")
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func (h *Handler) handleDNSStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	result := map[string]interface{}{
-		"config": map[string]interface{}{
-			"enabled":        h.cfg.DNSEnabled,
-			"domain":         h.cfg.DNSDomain,
-			"hasCredentials": h.cfg.AWSAccessKeyID != "" && h.cfg.AWSSecretAccessKey != "",
-			"intervalSecs":   h.cfg.DNSUpdateInterval,
-		},
-	}
-
-	if h.dnsUpdater != nil {
-		result["updater"] = h.dnsUpdater.GetStatus()
-	}
-
-	// Get current public IP
-	ip, err := dns.GetPublicIP()
-	if err == nil {
-		result["currentPublicIp"] = ip
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
-}
-
-func (h *Handler) handleDNSConfig(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		// Return DNS config (mask secret key)
-		resp := map[string]interface{}{
-			"dnsEnabled":        h.cfg.DNSEnabled,
-			"dnsDomain":         h.cfg.DNSDomain,
-			"awsAccessKeyId":    h.cfg.AWSAccessKeyID,
-			"hasSecretKey":      h.cfg.AWSSecretAccessKey != "",
-			"dnsUpdateInterval": h.cfg.DNSUpdateInterval,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-
-	case http.MethodPost:
-		var req struct {
-			DNSEnabled         bool   `json:"dnsEnabled"`
-			DNSDomain          string `json:"dnsDomain"`
-			AWSAccessKeyID     string `json:"awsAccessKeyId"`
-			AWSSecretAccessKey string `json:"awsSecretAccessKey"`
-			DNSUpdateInterval  int    `json:"dnsUpdateInterval"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		h.cfg.DNSEnabled = req.DNSEnabled
-		h.cfg.DNSDomain = req.DNSDomain
-		h.cfg.AWSAccessKeyID = req.AWSAccessKeyID
-		if req.AWSSecretAccessKey != "" {
-			h.cfg.AWSSecretAccessKey = req.AWSSecretAccessKey
-		}
-		if req.DNSUpdateInterval > 0 {
-			h.cfg.DNSUpdateInterval = req.DNSUpdateInterval
-		}
-
-		if err := config.Save(h.cfg); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to save: %s", err), http.StatusInternalServerError)
-			return
-		}
-
-		// Restart or stop the updater based on enabled state
-		if h.dnsUpdater != nil {
-			if h.cfg.DNSEnabled && h.cfg.AWSAccessKeyID != "" && h.cfg.AWSSecretAccessKey != "" && h.cfg.DNSDomain != "" {
-				if err := h.dnsUpdater.Start(
-					h.dnsCtx,
-					h.cfg.AWSAccessKeyID,
-					h.cfg.AWSSecretAccessKey,
-					h.cfg.DNSDomain,
-					h.cfg.DNSUpdateInterval,
-				); err != nil {
-					h.logger.Error("Failed to start DNS updater: %v", err)
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]interface{}{
-						"status": "saved",
-						"error":  fmt.Sprintf("Config saved but DNS updater failed to start: %v", err),
-					})
-					return
-				}
-				h.logger.Info("DNS updater started for %s", h.cfg.DNSDomain)
-			} else {
-				h.dnsUpdater.Stop()
-				h.logger.Info("DNS updater stopped")
-			}
-		}
-
-		h.logger.Info("DNS config updated via admin API")
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (h *Handler) handleDNSTest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.cfg.AWSAccessKeyID == "" || h.cfg.AWSSecretAccessKey == "" {
-		http.Error(w, "AWS credentials not configured", http.StatusBadRequest)
-		return
-	}
-	if h.cfg.DNSDomain == "" {
-		http.Error(w, "DNS domain not configured", http.StatusBadRequest)
-		return
-	}
-
-	updater := dns.NewUpdater(func(msg string) {
-		h.logger.Info("[DNS] %s", msg)
-	})
-
-	result, err := updater.RunOnce(h.cfg.AWSAccessKeyID, h.cfg.AWSSecretAccessKey, h.cfg.DNSDomain)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("DNS update failed: %s", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "result": result})
-}
-
-func (h *Handler) handleDNSPolicy(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Try to resolve the hosted zone ID for a more specific policy
-	hostedZoneID := ""
-	if h.dnsUpdater != nil {
-		status := h.dnsUpdater.GetStatus()
-		hostedZoneID = status.HostedZoneID
-	}
-
-	policy := dns.GenerateIAMPolicy(hostedZoneID)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"policy": policy})
-}

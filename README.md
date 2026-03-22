@@ -1,18 +1,16 @@
 # go-mcp-printer-windows
 
-A remote HTTPS-only MCP (Model Context Protocol) server for Windows printer management. Runs as a Windows service with system tray management UI, full OAuth 2.1 authentication, and automatic Let's Encrypt certificates.
+A remote MCP (Model Context Protocol) server for Windows printer management. Runs as a Windows service with system tray management UI and HTTP transport (designed for VPN environments).
 
 ## Features
 
 - **30 MCP Tools** for discovering, configuring, monitoring, and managing print jobs
-- **OAuth 2.1** with PKCE, dynamic client registration, JWT tokens
-- **HTTPS-only** with ACME/Let's Encrypt or self-signed certificates
-- **AWS Route 53** dynamic DNS updater with automatic public IP detection
+- **HTTP transport** designed for VPN/private network environments
 - **Windows Service** with auto-start and failure recovery
 - **System Tray** icon for easy management
-- **Admin Web UI** for configuration, printer status, DNS, OAuth clients, and logs
-- **MSI Installer** with service, tray auto-start, and firewall rules
-- **3 external dependencies** only (golang.org/x/sys, golang.org/x/crypto, fyne.io/systray)
+- **Admin Web UI** for configuration, printer status, and logs
+- **MSI Installer** with service, Start Menu shortcut, and firewall rules
+- **2 external dependencies** only (golang.org/x/sys, fyne.io/systray)
 
 ## Quick Start
 
@@ -20,21 +18,20 @@ A remote HTTPS-only MCP (Model Context Protocol) server for Windows printer mana
 # Build
 bash build.sh
 
-# Run in foreground (self-signed cert)
+# Run in foreground
 ./dist/go-mcp-printer-windows-amd64.exe serve
 
 # Open admin UI
 http://localhost:8787/admin/
 
 # Health check
-curl -k https://localhost/health
+curl http://localhost/health
 ```
 
 ## Commands
 
 ```
-go-mcp-printer-windows.exe serve      # HTTPS server (as service or foreground)
-go-mcp-printer-windows.exe tray       # System tray icon
+go-mcp-printer-windows.exe serve      # HTTP server (tray icon when interactive)
 go-mcp-printer-windows.exe install    # Install as Windows service (admin required)
 go-mcp-printer-windows.exe uninstall  # Remove Windows service (admin required)
 go-mcp-printer-windows.exe version    # Print version
@@ -75,17 +72,6 @@ go-mcp-printer-windows.exe version    # Print version
 | 29 | `print_multiple_files` | write | Print multiple files in batch (max 50) |
 | 30 | `get_printer_errors` | read-only | Get error state and recent error events |
 
-## OAuth 2.1 Flow
-
-The server acts as both Authorization Server and Resource Server:
-
-1. Client sends unauthenticated request to `/mcp` → gets `401` with `WWW-Authenticate` header
-2. Client discovers OAuth endpoints via `/.well-known/oauth-protected-resource`
-3. Client registers via `POST /register` → gets `client_id`
-4. User authorizes via browser at `/authorize` with PKCE
-5. Client exchanges code for JWT at `POST /token`
-6. Client calls `POST /mcp` with `Authorization: Bearer <JWT>`
-
 ## Configuration
 
 Config file: `C:\ProgramData\go-mcp-printer-windows\config.json`
@@ -93,39 +79,23 @@ Config file: `C:\ProgramData\go-mcp-printer-windows\config.json`
 ```json
 {
   "domain": "printer.example.com",
-  "httpsPort": 443,
-  "httpPort": 80,
-  "useSelfSigned": false,
-  "acmeEmail": "admin@example.com",
+  "port": 80,
   "logLevel": "info",
   "defaultPrinter": "HP LaserJet",
   "allowedPrinters": [],
   "blockedPrinters": [],
+  "photoPrinters": ["DP-DS820", "DP-QW410"],
   "allowedPaths": [],
   "adminPort": 8787,
   "rateLimitCalls": 10,
-  "rateLimitWindow": 20,
-  "dnsEnabled": false,
-  "dnsDomain": "printer.example.com",
-  "awsAccessKeyId": "",
-  "awsSecretAccessKey": "",
-  "dnsUpdateInterval": 300
+  "rateLimitWindow": 20
 }
 ```
 
 ## API Routes
 
 ```
-OAuth 2.1:
-  GET  /.well-known/oauth-protected-resource
-  GET  /.well-known/oauth-authorization-server
-  GET  /authorize
-  POST /token
-  POST /register
-  GET  /jwks
-  POST /revoke
-
-MCP (Bearer token required):
+MCP:
   POST /mcp
 
 Admin (port 8787, localhost or session auth):
@@ -137,14 +107,6 @@ Admin (port 8787, localhost or session auth):
   POST /admin/api/printers/test-all
   GET  /admin/api/logs
   GET  /admin/api/status
-  GET  /admin/api/oauth/clients
-  DELETE /admin/api/oauth/clients/:id
-  POST /admin/api/oauth/keys/regenerate
-  GET  /admin/api/dns/status
-  GET  /admin/api/dns/config
-  POST /admin/api/dns/config
-  POST /admin/api/dns/test
-  GET  /admin/api/dns/policy
 
 Health (no auth):
   GET  /health
@@ -171,8 +133,8 @@ The MSI installer:
 - Installs binary to `C:\Program Files\Go MCP Printer\`
 - Creates data directory at `C:\ProgramData\go-mcp-printer-windows\`
 - Installs Windows service `GoMCPPrinter` (auto-start)
-- Adds system tray to Windows startup
-- Configures firewall rules for ports 80 and 443
+- Adds Start Menu shortcut for interactive mode
+- Configures firewall rule for port 80
 
 ## License
 

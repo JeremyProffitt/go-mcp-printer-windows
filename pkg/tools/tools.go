@@ -131,11 +131,23 @@ func (r *Registry) isPathAllowed(path string) bool {
 	return false
 }
 
+func (r *Registry) annotatePhotoPrinters(printers []printer.PrinterInfo) {
+	photo := make(map[string]bool)
+	for _, name := range r.cfg.PhotoPrinters {
+		photo[strings.ToLower(name)] = true
+	}
+	for i := range printers {
+		if photo[strings.ToLower(printers[i].Name)] {
+			printers[i].Category = "photo"
+		}
+	}
+}
+
 // --- Tool 1: list_printers ---
 func (r *Registry) registerListPrinters(s *mcp.Server) {
 	s.RegisterTool(mcp.Tool{
 		Name:        "list_printers",
-		Description: "List all installed printers with status and type",
+		Description: "List all installed printers with status, type, and category (photo printers marked as category=photo)",
 		InputSchema: mcp.JSONSchema{Type: "object"},
 		Annotations: &mcp.ToolAnnotation{
 			Title:        "List Printers",
@@ -147,6 +159,7 @@ func (r *Registry) registerListPrinters(s *mcp.Server) {
 			return mcp.ErrorResult("Failed to list printers: %s", err), nil
 		}
 		printers = r.filterPrinters(printers)
+		r.annotatePhotoPrinters(printers)
 		return mcp.JSONResult(printers)
 	})
 }
@@ -286,7 +299,7 @@ func (r *Registry) registerPrintText(s *mcp.Server) {
 func (r *Registry) registerPrintImage(s *mcp.Server) {
 	s.RegisterTool(mcp.Tool{
 		Name:        "print_image",
-		Description: "Print an image with photo-optimized settings",
+		Description: "Print an image with photo-optimized settings. For best quality, use a photo printer (category=photo from list_printers)",
 		InputSchema: mcp.JSONSchema{
 			Type: "object",
 			Properties: map[string]mcp.Property{
@@ -1116,8 +1129,7 @@ func (r *Registry) registerGetPrinterServerStatus(s *mcp.Server) {
 			"version":       r.version,
 			"uptime":        uptime.String(),
 			"domain":        r.cfg.Domain,
-			"httpsPort":     r.cfg.HTTPSPort,
-			"useSelfSigned": r.cfg.UseSelfSigned,
+			"port":          r.cfg.Port,
 			"logLevel":      r.cfg.LogLevel,
 			"rateLimitCalls": r.cfg.RateLimitCalls,
 			"rateLimitWindow": fmt.Sprintf("%ds", r.cfg.RateLimitWindow),

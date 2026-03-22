@@ -31,8 +31,6 @@ const App = {
         switch (page) {
             case 'config': this.showConfig(main); break;
             case 'printers': this.showPrinters(main); break;
-            case 'oauth': this.showOAuth(main); break;
-            case 'dns': this.showDNS(main); break;
             case 'logs': this.showLogs(main); break;
             case 'status': this.showStatus(main); break;
             default: this.showConfig(main);
@@ -42,16 +40,32 @@ const App = {
     async showConfig(el) {
         el.innerHTML = '<div class="card"><h2>Server Configuration</h2><div id="config-form">Loading...</div></div>';
         try {
-            const resp = await fetch('/admin/api/config');
-            const cfg = await resp.json();
-            document.getElementById('config-form').innerHTML = this.renderConfigForm(cfg);
+            const [cfgResp, printersResp] = await Promise.all([
+                fetch('/admin/api/config'),
+                fetch('/admin/api/printers'),
+            ]);
+            const cfg = await cfgResp.json();
+            const printers = printersResp.ok ? await printersResp.json() : [];
+            document.getElementById('config-form').innerHTML = this.renderConfigForm(cfg, printers);
             document.getElementById('save-config').addEventListener('click', () => this.saveConfig());
+            document.getElementById('restart-server').addEventListener('click', () => this.restartServer());
+            document.getElementById('cfg-allowAll').addEventListener('change', (e) => {
+                const items = document.querySelectorAll('input[name="allowedPrinter"]');
+                items.forEach(cb => { cb.disabled = e.target.checked; cb.checked = e.target.checked; });
+                document.querySelectorAll('#cfg-allowedPrinters .checklist-printer').forEach(el => {
+                    el.style.opacity = e.target.checked ? '0.5' : '1';
+                });
+            });
         } catch (e) {
             document.getElementById('config-form').innerHTML = '<p class="error">Failed to load config</p>';
         }
     },
 
-    renderConfigForm(cfg) {
+    renderConfigForm(cfg, printers) {
+        const defaultName = cfg.defaultPrinter || '';
+        const systemDefault = (printers || []).find(p => p.isDefault);
+        const selectedValue = defaultName || (systemDefault ? systemDefault.name : '');
+
         return `
             <div class="form-row">
                 <div class="form-group">
@@ -59,42 +73,64 @@ const App = {
                     <input type="text" id="cfg-domain" value="${cfg.domain || ''}" placeholder="printer.example.com">
                 </div>
                 <div class="form-group">
-                    <label>HTTPS Port</label>
-                    <input type="number" id="cfg-httpsPort" value="${cfg.httpsPort || 443}">
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>HTTP Port</label>
-                    <input type="number" id="cfg-httpPort" value="${cfg.httpPort || 80}">
-                </div>
-                <div class="form-group">
-                    <label>Log Level</label>
-                    <select id="cfg-logLevel">
-                        ${['off','error','warn','info','access','debug'].map(l =>
-                            `<option value="${l}" ${cfg.logLevel === l ? 'selected' : ''}>${l}</option>`
-                        ).join('')}
-                    </select>
+                    <label>Port</label>
+                    <input type="number" id="cfg-port" value="${cfg.port || 80}">
                 </div>
             </div>
             <div class="form-group">
-                <label>ACME Email (Let's Encrypt)</label>
-                <input type="email" id="cfg-acmeEmail" value="${cfg.acmeEmail || ''}" placeholder="admin@example.com">
-            </div>
-            <div class="form-group">
-                <label><input type="checkbox" id="cfg-useSelfSigned" ${cfg.useSelfSigned ? 'checked' : ''}> Use Self-Signed Certificate</label>
+                <label>Log Level</label>
+                <select id="cfg-logLevel">
+                    ${['off','error','warn','info','access','debug'].map(l =>
+                        `<option value="${l}" ${cfg.logLevel === l ? 'selected' : ''}>${l}</option>`
+                    ).join('')}
+                </select>
             </div>
             <div class="form-group">
                 <label>Default Printer</label>
-                <input type="text" id="cfg-defaultPrinter" value="${cfg.defaultPrinter || ''}">
+                <select id="cfg-defaultPrinter">
+                    <option value="">(System Default)</option>
+                    ${(printers || []).map(p =>
+                        `<option value="${p.name}" ${p.name === selectedValue ? 'selected' : ''}>${p.name}${p.isDefault ? ' (system default)' : ''}</option>`
+                    ).join('')}
+                </select>
             </div>
             <div class="form-group">
-                <label>Allowed Printers (comma-separated, empty = all)</label>
-                <input type="text" id="cfg-allowedPrinters" value="${(cfg.allowedPrinters || []).join(', ')}">
+                <label>Allowed Printers</label>
+                <div class="printer-checklist" id="cfg-allowedPrinters">
+                    <label class="checklist-item">
+                        <input type="checkbox" id="cfg-allowAll" ${(cfg.allowedPrinters || []).length === 0 ? 'checked' : ''}> <strong>Allow All Printers</strong>
+                    </label>
+                    ${(printers || []).map(p => {
+                        const checked = (cfg.allowedPrinters || []).length === 0 || (cfg.allowedPrinters || []).includes(p.name);
+                        return `<label class="checklist-item checklist-printer" ${(cfg.allowedPrinters || []).length === 0 ? 'style="opacity:0.5"' : ''}>
+                            <input type="checkbox" name="allowedPrinter" value="${p.name}" ${checked ? 'checked' : ''} ${(cfg.allowedPrinters || []).length === 0 ? 'disabled' : ''}> ${p.name}
+                        </label>`;
+                    }).join('')}
+                </div>
             </div>
             <div class="form-group">
-                <label>Blocked Printers (comma-separated)</label>
-                <input type="text" id="cfg-blockedPrinters" value="${(cfg.blockedPrinters || []).join(', ')}">
+                <label>Blocked Printers</label>
+                <div class="printer-checklist" id="cfg-blockedPrinters">
+                    ${(printers || []).length === 0 ? '<span style="color:var(--text-muted);font-size:13px">No printers found</span>' :
+                    (printers || []).map(p => {
+                        const checked = (cfg.blockedPrinters || []).includes(p.name);
+                        return `<label class="checklist-item">
+                            <input type="checkbox" name="blockedPrinter" value="${p.name}" ${checked ? 'checked' : ''}> ${p.name}
+                        </label>`;
+                    }).join('')}
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Photo Printers <span style="font-weight:normal;color:var(--text-muted)">(dye-sub / photo printers)</span></label>
+                <div class="printer-checklist" id="cfg-photoPrinters">
+                    ${(printers || []).length === 0 ? '<span style="color:var(--text-muted);font-size:13px">No printers found</span>' :
+                    (printers || []).map(p => {
+                        const checked = (cfg.photoPrinters || []).includes(p.name);
+                        return `<label class="checklist-item">
+                            <input type="checkbox" name="photoPrinter" value="${p.name}" ${checked ? 'checked' : ''}> ${p.name}
+                        </label>`;
+                    }).join('')}
+                </div>
             </div>
             <div class="form-group">
                 <label>Allowed Paths (comma-separated, empty = all)</label>
@@ -111,21 +147,55 @@ const App = {
                 </div>
             </div>
             <button id="save-config" class="btn btn-primary">Save Configuration</button>
+            <button id="restart-server" class="btn btn-secondary" style="margin-left:8px">Restart Server</button>
         `;
+    },
+
+    async restartServer() {
+        try {
+            const resp = await fetch('/admin/api/restart', { method: 'POST' });
+            if (resp.ok) {
+                this.toast('Server restarting...', 'success');
+                // Poll until the server comes back
+                setTimeout(() => this.waitForServer(), 2000);
+            } else {
+                this.toast('Failed to restart', 'error');
+            }
+        } catch (e) {
+            this.toast('Restart sent, waiting for server...', 'success');
+            setTimeout(() => this.waitForServer(), 2000);
+        }
+    },
+
+    async waitForServer(attempts) {
+        attempts = attempts || 0;
+        if (attempts > 15) {
+            this.toast('Server did not come back. Check admin port in config.', 'error');
+            return;
+        }
+        try {
+            const resp = await fetch('/admin/api/status');
+            if (resp.ok) {
+                this.toast('Server is back online', 'success');
+                this.loadPage(this.currentPage);
+                return;
+            }
+        } catch (e) { /* still restarting */ }
+        setTimeout(() => this.waitForServer(attempts + 1), 1000);
     },
 
     async saveConfig() {
         const splitList = (v) => v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
+        const checkedValues = (name) => [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(cb => cb.value);
+        const allowAll = document.getElementById('cfg-allowAll').checked;
         const cfg = {
             domain: document.getElementById('cfg-domain').value,
-            httpsPort: parseInt(document.getElementById('cfg-httpsPort').value) || 443,
-            httpPort: parseInt(document.getElementById('cfg-httpPort').value) || 80,
+            port: parseInt(document.getElementById('cfg-port').value) || 80,
             logLevel: document.getElementById('cfg-logLevel').value,
-            acmeEmail: document.getElementById('cfg-acmeEmail').value,
-            useSelfSigned: document.getElementById('cfg-useSelfSigned').checked,
             defaultPrinter: document.getElementById('cfg-defaultPrinter').value,
-            allowedPrinters: splitList(document.getElementById('cfg-allowedPrinters').value),
-            blockedPrinters: splitList(document.getElementById('cfg-blockedPrinters').value),
+            allowedPrinters: allowAll ? [] : checkedValues('allowedPrinter'),
+            blockedPrinters: checkedValues('blockedPrinter'),
+            photoPrinters: checkedValues('photoPrinter'),
             allowedPaths: splitList(document.getElementById('cfg-allowedPaths').value),
             rateLimitCalls: parseInt(document.getElementById('cfg-rateLimitCalls').value) || 10,
             rateLimitWindow: parseInt(document.getElementById('cfg-rateLimitWindow').value) || 20,
@@ -138,7 +208,13 @@ const App = {
                 body: JSON.stringify(cfg),
             });
             if (resp.ok) {
-                this.toast('Configuration saved', 'success');
+                const result = await resp.json();
+                if (result.restart) {
+                    this.toast('Configuration saved. Server restarting on new port...', 'success');
+                    setTimeout(() => this.waitForServer(), 2000);
+                } else {
+                    this.toast('Configuration saved', 'success');
+                }
             } else {
                 this.toast('Failed to save', 'error');
             }
@@ -237,69 +313,6 @@ const App = {
         }
     },
 
-    async showOAuth(el) {
-        el.innerHTML = `
-            <div class="card">
-                <h2>OAuth Clients</h2>
-                <div id="oauth-clients">Loading...</div>
-            </div>
-            <div class="card">
-                <h2>Signing Keys</h2>
-                <p>RSA-2048 key used for JWT token signing.</p>
-                <button id="regen-keys" class="btn btn-danger">Regenerate Keys</button>
-                <p style="margin-top:8px;color:var(--text-muted);font-size:13px">Warning: regenerating keys will invalidate all existing tokens.</p>
-            </div>`;
-
-        document.getElementById('regen-keys').addEventListener('click', async () => {
-            if (!confirm('Regenerate signing keys? All existing tokens will be invalidated.')) return;
-            try {
-                const resp = await fetch('/admin/api/oauth/keys/regenerate', { method: 'POST' });
-                if (resp.ok) this.toast('Keys regenerated', 'success');
-                else this.toast('Failed', 'error');
-            } catch (e) {
-                this.toast('Error: ' + e.message, 'error');
-            }
-        });
-
-        try {
-            const resp = await fetch('/admin/api/oauth/clients');
-            const clients = await resp.json();
-            if (!clients || clients.length === 0) {
-                document.getElementById('oauth-clients').innerHTML = '<p>No registered clients</p>';
-                return;
-            }
-            let html = '<table><thead><tr><th>Client ID</th><th>Name</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
-            for (const c of clients) {
-                const created = new Date(c.created_at * 1000).toLocaleDateString();
-                html += `<tr>
-                    <td><code>${c.client_id.substring(0, 12)}...</code></td>
-                    <td>${c.client_name || '-'}</td>
-                    <td>${created}</td>
-                    <td><button class="btn btn-danger" onclick="App.deleteClient('${c.client_id}')">Delete</button></td>
-                </tr>`;
-            }
-            html += '</tbody></table>';
-            document.getElementById('oauth-clients').innerHTML = html;
-        } catch (e) {
-            document.getElementById('oauth-clients').innerHTML = '<p class="error">Failed to load clients</p>';
-        }
-    },
-
-    async deleteClient(clientId) {
-        if (!confirm('Delete this OAuth client?')) return;
-        try {
-            const resp = await fetch(`/admin/api/oauth/clients/${clientId}`, { method: 'DELETE' });
-            if (resp.ok) {
-                this.toast('Client deleted', 'success');
-                this.showOAuth(document.querySelector('.main'));
-            } else {
-                this.toast('Failed', 'error');
-            }
-        } catch (e) {
-            this.toast('Error: ' + e.message, 'error');
-        }
-    },
-
     async showLogs(el) {
         el.innerHTML = '<div class="card"><h2>Server Logs</h2><div id="log-content" class="log-viewer">Loading...</div></div>';
         try {
@@ -312,159 +325,20 @@ const App = {
     },
 
     async showStatus(el) {
-        el.innerHTML = '<div class="card"><h2>Server Status</h2><div id="status-info">Loading...</div></div>';
+        el.innerHTML = '<div class="card"><h2>Server Status</h2><div id="status-info">Loading...</div><div style="margin-top:16px"><button id="status-restart" class="btn btn-secondary">Restart Server</button></div></div>';
+        document.getElementById('status-restart').addEventListener('click', () => this.restartServer());
         try {
             const resp = await fetch('/admin/api/status');
             const status = await resp.json();
-            const cert = status.certificate || {};
-            delete status.certificate;
-
             let html = '<table>';
             for (const [key, value] of Object.entries(status)) {
                 html += `<tr><td><strong>${key}</strong></td><td>${value}</td></tr>`;
             }
             html += '</table>';
 
-            html += '<h3 style="margin-top:20px">TLS Certificate</h3><table>';
-            html += `<tr><td><strong>Mode</strong></td><td><span class="badge ${cert.mode === 'acme' ? 'badge-success' : 'badge-warning'}">${cert.mode || 'unknown'}</span></td></tr>`;
-            html += `<tr><td><strong>Domain</strong></td><td>${cert.domain || '-'}</td></tr>`;
-            html += `<tr><td><strong>Issuer</strong></td><td>${cert.issuer || '-'}</td></tr>`;
-            if (cert.notBefore) html += `<tr><td><strong>Valid From</strong></td><td>${new Date(cert.notBefore).toLocaleString()}</td></tr>`;
-            if (cert.notAfter) html += `<tr><td><strong>Valid Until</strong></td><td>${new Date(cert.notAfter).toLocaleString()}</td></tr>`;
-            html += '</table>';
-
             document.getElementById('status-info').innerHTML = html;
         } catch (e) {
             document.getElementById('status-info').innerHTML = '<p class="error">Failed to load status</p>';
-        }
-    },
-
-    async showDNS(el) {
-        el.innerHTML = `
-            <div class="card">
-                <h2>DNS / Route 53 Configuration</h2>
-                <p style="margin-bottom:16px;color:var(--text-muted)">Automatically update an AWS Route 53 A record with this machine's public IP address.</p>
-                <div id="dns-form">Loading...</div>
-            </div>
-            <div class="card">
-                <h2>Required IAM Policy</h2>
-                <p style="margin-bottom:12px;color:var(--text-muted)">Create an IAM user with this policy and enter the credentials above.</p>
-                <pre id="iam-policy" class="log-viewer" style="max-height:300px;font-size:12px">Loading...</pre>
-            </div>
-            <div class="card">
-                <h2>DNS Update Status</h2>
-                <div id="dns-status">Loading...</div>
-            </div>`;
-
-        try {
-            const [cfgResp, statusResp, policyResp] = await Promise.all([
-                fetch('/admin/api/dns/config'),
-                fetch('/admin/api/dns/status'),
-                fetch('/admin/api/dns/policy'),
-            ]);
-            const cfg = await cfgResp.json();
-            const status = await statusResp.json();
-            const policy = await policyResp.json();
-
-            document.getElementById('dns-form').innerHTML = this.renderDNSForm(cfg);
-            document.getElementById('iam-policy').textContent = policy.policy || 'Unable to load policy';
-            document.getElementById('dns-status').innerHTML = this.renderDNSStatus(status);
-
-            document.getElementById('save-dns').addEventListener('click', () => this.saveDNSConfig());
-            document.getElementById('test-dns').addEventListener('click', () => this.testDNS());
-        } catch (e) {
-            document.getElementById('dns-form').innerHTML = '<p class="error">Failed to load DNS config</p>';
-        }
-    },
-
-    renderDNSForm(cfg) {
-        return `
-            <div class="form-group">
-                <label><input type="checkbox" id="dns-enabled" ${cfg.dnsEnabled ? 'checked' : ''}> Enable automatic DNS updates</label>
-            </div>
-            <div class="form-group">
-                <label>Full Domain Name</label>
-                <input type="text" id="dns-domain" value="${cfg.dnsDomain || ''}" placeholder="printer.example.com">
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>AWS Access Key ID</label>
-                    <input type="text" id="dns-accessKey" value="${cfg.awsAccessKeyId || ''}" placeholder="AKIAIOSFODNN7EXAMPLE">
-                </div>
-                <div class="form-group">
-                    <label>AWS Secret Access Key</label>
-                    <input type="password" id="dns-secretKey" value="" placeholder="${cfg.hasSecretKey ? '(saved - enter new to change)' : 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'}">
-                </div>
-            </div>
-            <div class="form-group">
-                <label>Update Interval (seconds)</label>
-                <input type="number" id="dns-interval" value="${cfg.dnsUpdateInterval || 300}" min="60" placeholder="300">
-                <span style="font-size:12px;color:var(--text-muted)">Minimum 60 seconds. Default 300 (5 minutes).</span>
-            </div>
-            <div style="display:flex;gap:12px;margin-top:8px">
-                <button id="save-dns" class="btn btn-primary">Save DNS Configuration</button>
-                <button id="test-dns" class="btn btn-secondary">Test Update Now</button>
-            </div>
-        `;
-    },
-
-    renderDNSStatus(status) {
-        const updater = status.updater || {};
-        const cfg = status.config || {};
-        let html = '<table>';
-        html += `<tr><td><strong>Enabled</strong></td><td><span class="badge ${cfg.enabled ? 'badge-success' : 'badge-warning'}">${cfg.enabled ? 'Yes' : 'No'}</span></td></tr>`;
-        html += `<tr><td><strong>Current Public IP</strong></td><td>${status.currentPublicIp || 'Unknown'}</td></tr>`;
-        if (updater.domain) html += `<tr><td><strong>DNS Domain</strong></td><td>${updater.domain}</td></tr>`;
-        if (updater.hostedZoneId) html += `<tr><td><strong>Hosted Zone ID</strong></td><td>${updater.hostedZoneId}</td></tr>`;
-        if (updater.publicIp) html += `<tr><td><strong>Last Updated IP</strong></td><td>${updater.publicIp}</td></tr>`;
-        if (updater.lastUpdate) html += `<tr><td><strong>Last Update</strong></td><td>${new Date(updater.lastUpdate).toLocaleString()}</td></tr>`;
-        if (updater.nextUpdate) html += `<tr><td><strong>Next Update</strong></td><td>${new Date(updater.nextUpdate).toLocaleString()}</td></tr>`;
-        html += `<tr><td><strong>Update Count</strong></td><td>${updater.updateCount || 0}</td></tr>`;
-        if (updater.lastError) html += `<tr><td><strong>Last Error</strong></td><td style="color:var(--danger)">${updater.lastError}</td></tr>`;
-        html += '</table>';
-        return html;
-    },
-
-    async saveDNSConfig() {
-        const cfg = {
-            dnsEnabled: document.getElementById('dns-enabled').checked,
-            dnsDomain: document.getElementById('dns-domain').value,
-            awsAccessKeyId: document.getElementById('dns-accessKey').value,
-            awsSecretAccessKey: document.getElementById('dns-secretKey').value,
-            dnsUpdateInterval: parseInt(document.getElementById('dns-interval').value) || 300,
-        };
-
-        try {
-            const resp = await fetch('/admin/api/dns/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(cfg),
-            });
-            const result = await resp.json();
-            if (resp.ok) {
-                this.toast(result.error || 'DNS configuration saved', result.error ? 'error' : 'success');
-                this.showDNS(document.querySelector('.main'));
-            } else {
-                this.toast('Failed to save DNS config', 'error');
-            }
-        } catch (e) {
-            this.toast('Error: ' + e.message, 'error');
-        }
-    },
-
-    async testDNS() {
-        this.toast('Testing DNS update...', 'success');
-        try {
-            const resp = await fetch('/admin/api/dns/test', { method: 'POST' });
-            const result = await resp.json();
-            if (resp.ok) {
-                this.toast(result.result || 'DNS update successful', 'success');
-                this.showDNS(document.querySelector('.main'));
-            } else {
-                this.toast('DNS test failed: ' + (result.message || resp.statusText), 'error');
-            }
-        } catch (e) {
-            this.toast('Error: ' + e.message, 'error');
         }
     },
 

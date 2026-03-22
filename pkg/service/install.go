@@ -25,7 +25,7 @@ func Install(exePath string) error {
 
 	s, err = m.CreateService(config.ServiceName, exePath, mgr.Config{
 		DisplayName:      "Go MCP Printer Server",
-		Description:      "MCP server for Windows printer management over HTTPS",
+		Description:      "MCP server for Windows printer management over HTTP",
 		StartType:        mgr.StartAutomatic,
 		ServiceStartName: "NT AUTHORITY\\LocalService",
 	}, "serve")

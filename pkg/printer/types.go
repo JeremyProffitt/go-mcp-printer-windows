@@ -11,7 +11,8 @@ type PrinterInfo struct {
 	Comment      string       `json:"comment,omitempty"`
 	PrinterState string       `json:"printerState"`
 	IsDefault    bool         `json:"isDefault"`
-	Type         string       `json:"type,omitempty"` // local, network
+	Type         string       `json:"type,omitempty"`     // local, network
+	Category     string       `json:"category,omitempty"` // photo
 	Capabilities *Capabilities `json:"capabilities,omitempty"`
 }
 

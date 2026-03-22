@@ -28,10 +28,21 @@ type ServerInfo struct {
 }
 
 type ServerCapabilities struct {
-	Tools *ToolsCapability `json:"tools,omitempty"`
+	Tools     *ToolsCapability     `json:"tools,omitempty"`
+	Resources *ResourcesCapability `json:"resources,omitempty"`
+	Prompts   *PromptsCapability   `json:"prompts,omitempty"`
 }
 
 type ToolsCapability struct {
+	ListChanged bool `json:"listChanged,omitempty"`
+}
+
+type ResourcesCapability struct {
+	Subscribe   bool `json:"subscribe,omitempty"`
+	ListChanged bool `json:"listChanged,omitempty"`
+}
+
+type PromptsCapability struct {
 	ListChanged bool `json:"listChanged,omitempty"`
 }
 
@@ -114,6 +125,55 @@ type CallToolResult struct {
 type ContentItem struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+}
+
+// Resource types
+type Resource struct {
+	URI         string `json:"uri"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+type ListResourcesResult struct {
+	Resources []Resource `json:"resources"`
+}
+
+type ReadResourceResult struct {
+	Contents []ResourceContent `json:"contents"`
+}
+
+type ResourceContent struct {
+	URI      string `json:"uri"`
+	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
+}
+
+// Prompt types
+type Prompt struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	Arguments   []PromptArgument `json:"arguments,omitempty"`
+}
+
+type PromptArgument struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+type ListPromptsResult struct {
+	Prompts []Prompt `json:"prompts"`
+}
+
+type GetPromptResult struct {
+	Description string        `json:"description,omitempty"`
+	Messages    []PromptMessage `json:"messages"`
+}
+
+type PromptMessage struct {
+	Role    string      `json:"role"`
+	Content ContentItem `json:"content"`
 }
 
 // Error codes

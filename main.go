@@ -13,7 +13,6 @@ import (
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/config"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/logging"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/mcp"
-	"github.com/jeremyje/go-mcp-printer-windows/pkg/oauth"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/service"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/tools"
 	"github.com/jeremyje/go-mcp-printer-windows/pkg/tray"
@@ -31,8 +30,6 @@ func main() {
 	switch cmd {
 	case "serve":
 		runServe()
-	case "tray":
-		runTray()
 	case "install":
 		runInstall()
 	case "uninstall":
@@ -55,8 +52,7 @@ Usage:
   go-mcp-printer-windows <command>
 
 Commands:
-  serve      Start HTTPS server (as Windows service or foreground)
-  tray       Start system tray icon
+  serve      Start server (tray icon when run interactively)
   install    Install as Windows service (requires admin)
   uninstall  Remove Windows service (requires admin)
   version    Print version
@@ -65,16 +61,10 @@ Commands:
 }
 
 func runServe() {
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
-	}
-
 	logger, err := logging.NewLogger(logging.Config{
-		LogDir:  cfg.LogDir,
+		LogDir:  config.DefaultConfig().LogDir,
 		AppName: config.AppName,
-		Level:   logging.ParseLogLevel(cfg.LogLevel),
+		Level:   logging.LevelInfo,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
@@ -82,30 +72,87 @@ func runServe() {
 	}
 	defer logger.Close()
 
-	startupInfo := logging.GetStartupInfo(version, cfg.LogDir, cfg.LogLevel, cfg.Domain, cfg.HTTPSPort)
+	// Restart channel — any goroutine can request a restart by sending on this
+	restartCh := make(chan struct{}, 1)
+
+	if service.IsWindowsService() {
+		logger.Info("Running as Windows service")
+		if err := service.Run(func(ctx context.Context) error {
+			return runServerLoop(ctx, logger, restartCh)
+		}, logger); err != nil {
+			logger.Error("Service error: %v", err)
+			logger.LogShutdown(fmt.Sprintf("error: %v", err))
+			os.Exit(1)
+		}
+	} else {
+		logger.Info("Running in foreground mode")
+		hideConsoleWindow()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+		go func() {
+			select {
+			case sig := <-sigChan:
+				logger.LogShutdown(fmt.Sprintf("signal: %v", sig))
+				fmt.Fprintf(os.Stderr, "\nShutting down...\n")
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+
+		// Run server loop in background goroutine
+		go func() {
+			if err := runServerLoop(ctx, logger, restartCh); err != nil && err != http.ErrServerClosed {
+				logger.Error("Server error: %v", err)
+				logger.LogShutdown(fmt.Sprintf("error: %v", err))
+				fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+				cancel()
+			}
+		}()
+
+		// tray.Run blocks on main thread (Windows GUI thread affinity)
+		cfg, _ := config.Load()
+		tray.Run(ctx, cancel, cfg.Port, cfg.AdminPort)
+		logger.LogShutdown("normal exit")
+	}
+}
+
+// runServerLoop loads config, starts servers, and restarts when signalled.
+func runServerLoop(ctx context.Context, logger *logging.Logger, restartCh chan struct{}) error {
+	for {
+		if err := runServerOnce(ctx, logger, restartCh); err != nil {
+			return err
+		}
+
+		// Wait for restart signal or parent context cancellation
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-restartCh:
+			logger.Info("Restarting server...")
+			fmt.Fprintf(os.Stderr, "Restarting server...\n")
+			// Clear config cache so we reload from disk
+			config.ClearCache()
+			continue
+		}
+	}
+}
+
+// runServerOnce runs one lifecycle of the MCP + admin servers until ctx is
+// cancelled or the iteration context is cancelled (for restart).
+func runServerOnce(parentCtx context.Context, logger *logging.Logger, restartCh chan struct{}) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	logger.SetLevel(logging.ParseLogLevel(cfg.LogLevel))
+	startupInfo := logging.GetStartupInfo(version, cfg.LogDir, cfg.LogLevel, cfg.Domain, cfg.Port)
 	logger.LogStartup(startupInfo)
-
-	// Initialize OAuth
-	oauthStore, err := oauth.NewStore(config.OAuthStorePath())
-	if err != nil {
-		logger.Error("Failed to initialize OAuth store: %v", err)
-		fmt.Fprintf(os.Stderr, "Failed to initialize OAuth store: %v\n", err)
-		os.Exit(1)
-	}
-
-	_, err = oauth.LoadOrGenerateKey(config.OAuthKeyPath())
-	if err != nil {
-		logger.Error("Failed to load/generate OAuth key: %v", err)
-		fmt.Fprintf(os.Stderr, "Failed to load/generate OAuth key: %v\n", err)
-		os.Exit(1)
-	}
-
-	issuer := fmt.Sprintf("https://%s", cfg.Domain)
-	if cfg.HTTPSPort != 443 {
-		issuer = fmt.Sprintf("https://%s:%d", cfg.Domain, cfg.HTTPSPort)
-	}
-
-	oauthServer := oauth.NewServer(oauthStore, config.OAuthKeyPath(), issuer, logger)
 
 	// Create MCP server
 	server := mcp.NewServer(
@@ -115,107 +162,85 @@ func runServe() {
 		time.Duration(cfg.RateLimitWindow)*time.Second,
 	)
 
-	// Set OAuth validator
-	server.AuthValidator = oauthServer.ValidateRequest
-
-	// Set telemetry callback
-	server.SetToolCallCallback(func(name string, args map[string]interface{}, duration time.Duration, success bool) {
-		logger.ToolCall(name, args, duration, success)
+	// Log every MCP JSON-RPC request
+	server.SetRequestCallback(func(method string) {
+		logger.Access("MCP_REQUEST method=%q", method)
 	})
 
-	// Register OAuth routes
-	oauthServer.RegisterRoutes(server)
+	// Log tool calls + show Windows notification for print operations
+	printTools := map[string]bool{
+		"print_file": true, "print_text": true, "print_image": true,
+		"print_html": true, "print_test_page": true, "print_all_test_pages": true,
+		"print_url": true, "print_markdown": true, "print_multiple_files": true,
+	}
+	server.SetToolCallCallback(func(name string, args map[string]interface{}, duration time.Duration, success bool) {
+		logger.ToolCall(name, args, duration, success)
+		if printTools[name] && success {
+			printerArg, _ := args["printer"].(string)
+			msg := fmt.Sprintf("Tool: %s", name)
+			if printerArg != "" {
+				msg = fmt.Sprintf("Tool: %s → %s", name, printerArg)
+			}
+			tray.Notify("Print Request", msg)
+		}
+	})
 
-	// Register tools
+	// Register tools, resources, and prompts
 	registry := tools.NewRegistry(cfg, logger, version)
 	registry.RegisterAll(server)
-
-	// Create context for background tasks
-	bgCtx, bgCancel := context.WithCancel(context.Background())
-	defer bgCancel()
+	registry.RegisterResources(server)
+	registry.RegisterPrompts(server)
 
 	// Create admin mux on separate port
 	adminMux := http.NewServeMux()
-	adminHandler := admin.NewHandler(cfg, logger, oauthServer, version, bgCtx)
+	adminHandler := admin.NewHandler(cfg, logger, version, restartCh)
 	adminHandler.RegisterRoutes(adminMux)
 
 	fmt.Fprintf(os.Stderr, "Go MCP Printer Server v%s\n", version)
-	fmt.Fprintf(os.Stderr, "HTTPS: %s:%d\n", cfg.Domain, cfg.HTTPSPort)
-	fmt.Fprintf(os.Stderr, "Tools: %d registered\n", server.ToolCount())
+	fmt.Fprintf(os.Stderr, "HTTP: %s:%d\n", cfg.Domain, cfg.Port)
+	fmt.Fprintf(os.Stderr, "Tools: %d | Resources: %d | Prompts: %d\n", server.ToolCount(), server.ResourceCount(), server.PromptCount())
 	fmt.Fprintf(os.Stderr, "Admin: http://localhost:%d/admin/\n", cfg.AdminPort)
 
-	// Run as service or foreground
-	runFunc := func(ctx context.Context) error {
-		// Start admin HTTP server
-		adminServer := &http.Server{
-			Addr:    fmt.Sprintf(":%d", cfg.AdminPort),
-			Handler: adminMux,
-		}
-		go func() {
-			if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error("Admin server error: %v", err)
-			}
-		}()
-		go func() {
-			<-ctx.Done()
-			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			adminServer.Shutdown(shutCtx)
-		}()
+	// Per-iteration context — cancel this to shut down servers for restart
+	iterCtx, iterCancel := context.WithCancel(parentCtx)
+	defer iterCancel()
 
-		return server.RunHTTPS(
-			ctx,
-			cfg.Domain,
-			cfg.HTTPSPort,
-			cfg.HTTPPort,
-			cfg.UseSelfSigned,
-			cfg.ACMEEmail,
-			config.CertDir(),
-		)
+	// Start admin HTTP server
+	adminServer := &http.Server{
+		Addr:    fmt.Sprintf(":%d", cfg.AdminPort),
+		Handler: adminMux,
 	}
-
-	if service.IsWindowsService() {
-		logger.Info("Running as Windows service")
-		if err := service.Run(runFunc, logger); err != nil {
-			logger.Error("Service error: %v", err)
-			logger.LogShutdown(fmt.Sprintf("error: %v", err))
-			os.Exit(1)
+	go func() {
+		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("Admin server error: %v", err)
 		}
-	} else {
-		logger.Info("Running in foreground mode")
-		ctx, cancel := context.WithCancel(context.Background())
+	}()
+	go func() {
+		<-iterCtx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		adminServer.Shutdown(shutCtx)
+	}()
 
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-		go func() {
-			sig := <-sigChan
-			logger.LogShutdown(fmt.Sprintf("signal: %v", sig))
-			fmt.Fprintf(os.Stderr, "\nShutting down...\n")
-			cancel()
-		}()
-
-		if err := runFunc(ctx); err != nil {
-			logger.Error("Server error: %v", err)
-			logger.LogShutdown(fmt.Sprintf("error: %v", err))
-			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
-			os.Exit(1)
+	// When restartCh fires, cancel this iteration so servers shut down
+	go func() {
+		select {
+		case <-iterCtx.Done():
+		case <-restartCh:
+			// Put the signal back so the loop in runServerLoop sees it
+			select {
+			case restartCh <- struct{}{}:
+			default:
+			}
+			iterCancel()
 		}
-		logger.LogShutdown("normal exit")
-	}
-}
+	}()
 
-func runTray() {
-	// Hide the console window (Windows only)
-	hideConsoleWindow()
-
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
+	err = server.RunHTTP(iterCtx, fmt.Sprintf(":%d", cfg.Port))
+	if err == http.ErrServerClosed {
+		return nil
 	}
-	tray.Run(cfg.HTTPSPort, cfg.AdminPort)
+	return err
 }
 
 func runInstall() {

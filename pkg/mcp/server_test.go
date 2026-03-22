@@ -239,15 +239,3 @@ func TestIsLocalRequest(t *testing.T) {
 	// but we test the parsing logic
 }
 
-func TestGenerateSelfSignedCert(t *testing.T) {
-	cert, err := generateSelfSignedCert("localhost")
-	if err != nil {
-		t.Fatalf("generateSelfSignedCert() error = %v", err)
-	}
-	if len(cert.Certificate) == 0 {
-		t.Error("Expected at least one certificate")
-	}
-	if cert.PrivateKey == nil {
-		t.Error("Expected private key")
-	}
-}

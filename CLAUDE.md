@@ -2,33 +2,30 @@
 
 ## Overview
 
-Remote HTTPS-only MCP server for Windows printer management. Runs as a Windows service with a system tray management UI. Provides 14 MCP tools for discovering, configuring, and managing print jobs via the Model Context Protocol.
+Remote HTTP MCP server for Windows printer management (designed for VPN environments). Runs as a Windows service with a system tray management UI. Provides MCP tools for discovering, configuring, and managing print jobs via the Model Context Protocol.
 
 ## Architecture
 
 Single binary with subcommands:
-- `serve` — HTTPS server (Windows service or foreground)
-- `tray` — System tray icon (opens admin UI in browser)
+- `serve` — HTTP server (Windows service or foreground with tray icon)
 - `install` / `uninstall` — Windows service management
 - `version` — Print version
 
-## External Dependencies (3 only)
+## External Dependencies (2 only)
 
 - `golang.org/x/sys` — Windows service (svc, mgr packages)
-- `golang.org/x/crypto` — ACME/autocert for Let's Encrypt
-- `fyne.io/systray` — System tray icon (pure Go, no CGo)
+- `fyne.io/systray` — System tray icon in foreground mode (pure Go, no CGo)
 
-Everything else uses Go standard library (JWT, JSON-RPC, HTTP, TLS, HTML templates, embed).
+Everything else uses Go standard library (JSON-RPC, HTTP, HTML templates, embed).
 
 ## Key Directories
 
-- `pkg/mcp/` — MCP protocol types and HTTPS JSON-RPC server
-- `pkg/oauth/` — OAuth 2.1 (authorization server + resource server)
+- `pkg/mcp/` — MCP protocol types and HTTP JSON-RPC server
 - `pkg/printer/` — PowerShell printer backend
 - `pkg/tools/` — 14 MCP tool registrations
 - `pkg/admin/` — Admin web UI handlers
 - `pkg/service/` — Windows service (svc.Handler)
-- `pkg/tray/` — System tray
+- `pkg/tray/` — System tray (shown in foreground serve mode)
 - `pkg/config/` — Config struct + JSON persistence
 - `pkg/logging/` — Structured logger with PII filtering
 - `web/` — Embedded admin UI (HTML/CSS/JS)
@@ -54,6 +51,5 @@ go test -v -race ./...
 
 - Go standard formatting (`go fmt`)
 - No CGo (pure Go)
-- Minimal dependencies (3 external)
+- Minimal dependencies (2 external)
 - All printer operations via PowerShell
-- JWT implementation is manual (crypto/rsa + encoding/base64)

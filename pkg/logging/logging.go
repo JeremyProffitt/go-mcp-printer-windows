@@ -205,15 +205,6 @@ func (l *Logger) PrintJob(printer, file string, copies int, err error) {
 	}
 }
 
-// OAuthEvent logs an OAuth-related event.
-func (l *Logger) OAuthEvent(event, clientID string, err error) {
-	if err != nil {
-		l.Info("OAUTH %s client=%q error=%q", event, MaskSecret(clientID), err.Error())
-	} else {
-		l.Info("OAUTH %s client=%q", event, MaskSecret(clientID))
-	}
-}
-
 // HTTPAccess logs an HTTP request.
 func (l *Logger) HTTPAccess(method, path string, statusCode int, duration time.Duration) {
 	l.Access("HTTP %s %s status=%d duration=%s", method, path, statusCode, duration)
@@ -229,7 +220,7 @@ type StartupInfo struct {
 	LogDir    string
 	LogLevel  string
 	Domain    string
-	HTTPSPort int
+	Port      int
 	PID       int
 	StartTime time.Time
 }
@@ -248,7 +239,7 @@ func (l *Logger) LogStartup(info StartupInfo) {
 	l.Info("Log Directory: %s", info.LogDir)
 	l.Info("Log Level: %s", info.LogLevel)
 	l.Info("Domain: %s", info.Domain)
-	l.Info("HTTPS Port: %d", info.HTTPSPort)
+	l.Info("Port: %d", info.Port)
 	l.Info("========================================")
 }
 
@@ -261,7 +252,7 @@ func (l *Logger) LogShutdown(reason string) {
 	l.Info("========================================")
 }
 
-func GetStartupInfo(version, logDir, logLevel, domain string, httpsPort int) StartupInfo {
+func GetStartupInfo(version, logDir, logLevel, domain string, port int) StartupInfo {
 	return StartupInfo{
 		Version:   version,
 		GoVersion: runtime.Version(),
@@ -271,7 +262,7 @@ func GetStartupInfo(version, logDir, logLevel, domain string, httpsPort int) Sta
 		LogDir:    logDir,
 		LogLevel:  logLevel,
 		Domain:    domain,
-		HTTPSPort: httpsPort,
+		Port:      port,
 		PID:       os.Getpid(),
 		StartTime: time.Now(),
 	}

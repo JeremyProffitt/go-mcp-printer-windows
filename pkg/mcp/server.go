@@ -2,31 +2,27 @@ package mcp
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/acme/autocert"
 )
 
 // ToolHandler is a function that handles a tool call.
 type ToolHandler func(arguments map[string]interface{}) (*CallToolResult, error)
 
-// Server represents an MCP HTTPS server.
+// ResourceHandler is a function that returns the content of a resource.
+type ResourceHandler func() (string, error)
+
+// PromptHandler is a function that returns prompt messages given arguments.
+type PromptHandler func(arguments map[string]string) (*GetPromptResult, error)
+
+// Server represents an MCP HTTP server.
 type Server struct {
 	name    string
 	version string
@@ -34,21 +30,24 @@ type Server struct {
 	handlers map[string]ToolHandler
 	mu      sync.RWMutex
 
+	// Resources
+	resources        []Resource
+	resourceHandlers map[string]ResourceHandler
+
+	// Prompts
+	prompts        []Prompt
+	promptHandlers map[string]PromptHandler
+
 	// Rate limiting
 	toolCallTimestamps []time.Time
 	rateLimitMu        sync.Mutex
 	rateLimitCalls     int
 	rateLimitWindow    time.Duration
 
-	// Auth middleware (set by OAuth package)
-	AuthValidator func(r *http.Request) (bool, error)
-
-	// Additional route handlers
-	extraRoutes map[string]http.Handler
-
 	// Callbacks
 	onToolCall func(name string, args map[string]interface{}, duration time.Duration, success bool)
 	onError    func(err error, context string)
+	onRequest  func(method string)
 }
 
 // NewServer creates a new MCP server.
@@ -64,10 +63,13 @@ func NewServer(name, version string, rateLimitCalls int, rateLimitWindow time.Du
 		version:            version,
 		tools:              make([]Tool, 0),
 		handlers:           make(map[string]ToolHandler),
+		resources:          make([]Resource, 0),
+		resourceHandlers:   make(map[string]ResourceHandler),
+		prompts:            make([]Prompt, 0),
+		promptHandlers:     make(map[string]PromptHandler),
 		toolCallTimestamps: make([]time.Time, 0),
 		rateLimitCalls:     rateLimitCalls,
 		rateLimitWindow:    rateLimitWindow,
-		extraRoutes:        make(map[string]http.Handler),
 	}
 }
 
@@ -79,6 +81,10 @@ func (s *Server) SetErrorCallback(cb func(err error, context string)) {
 	s.onError = cb
 }
 
+func (s *Server) SetRequestCallback(cb func(method string)) {
+	s.onRequest = cb
+}
+
 // RegisterTool registers a tool with its handler.
 func (s *Server) RegisterTool(tool Tool, handler ToolHandler) {
 	s.mu.Lock()
@@ -87,16 +93,20 @@ func (s *Server) RegisterTool(tool Tool, handler ToolHandler) {
 	s.handlers[tool.Name] = handler
 }
 
-// Handle registers an additional HTTP route handler.
-func (s *Server) Handle(pattern string, handler http.Handler) {
+// RegisterResource registers a static resource.
+func (s *Server) RegisterResource(resource Resource, handler ResourceHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.extraRoutes[pattern] = handler
+	s.resources = append(s.resources, resource)
+	s.resourceHandlers[resource.URI] = handler
 }
 
-// HandleFunc registers an additional HTTP route handler function.
-func (s *Server) HandleFunc(pattern string, handler http.HandlerFunc) {
-	s.Handle(pattern, handler)
+// RegisterPrompt registers a prompt template.
+func (s *Server) RegisterPrompt(prompt Prompt, handler PromptHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompts = append(s.prompts, prompt)
+	s.promptHandlers[prompt.Name] = handler
 }
 
 func (s *Server) checkRateLimit() bool {
@@ -136,15 +146,8 @@ func (s *Server) BuildMux() *http.ServeMux {
 		})
 	})
 
-	// MCP endpoint (requires Bearer token)
+	// MCP endpoint
 	mux.HandleFunc("/mcp", s.handleMCPEndpoint)
-
-	// Register extra routes
-	s.mu.RLock()
-	for pattern, handler := range s.extraRoutes {
-		mux.Handle(pattern, handler)
-	}
-	s.mu.RUnlock()
 
 	return mux
 }
@@ -153,24 +156,6 @@ func (s *Server) handleMCPEndpoint(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
-	}
-
-	// Check authentication
-	if s.AuthValidator != nil {
-		valid, err := s.AuthValidator(r)
-		if err != nil || !valid {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="/.well-known/oauth-protected-resource"`)
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(&JSONRPCResponse{
-				JSONRPC: "2.0",
-				Error: &JSONRPCError{
-					Code:    -32001,
-					Message: "Unauthorized: invalid or missing Bearer token",
-				},
-			})
-			return
-		}
 	}
 
 	body, err := io.ReadAll(r.Body)
@@ -193,166 +178,25 @@ func (s *Server) handleMCPEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// CertInfo holds information about the current TLS certificate.
-type CertInfo struct {
-	Domain    string `json:"domain"`
-	Issuer    string `json:"issuer"`
-	NotBefore string `json:"notBefore"`
-	NotAfter  string `json:"notAfter"`
-	Mode      string `json:"mode"` // "acme" or "self-signed"
-}
-
-// certInfo stores the current certificate details (set during startup).
-var (
-	currentCertInfo   *CertInfo
-	currentCertInfoMu sync.RWMutex
-)
-
-// GetCertInfo returns the current TLS certificate info.
-func GetCertInfo() *CertInfo {
-	currentCertInfoMu.RLock()
-	defer currentCertInfoMu.RUnlock()
-	if currentCertInfo == nil {
-		return &CertInfo{Mode: "unknown"}
-	}
-	return currentCertInfo
-}
-
-func setCertInfo(info *CertInfo) {
-	currentCertInfoMu.Lock()
-	defer currentCertInfoMu.Unlock()
-	currentCertInfo = info
-}
-
-// RunHTTPS starts the HTTPS server with ACME or self-signed certificates.
-func (s *Server) RunHTTPS(ctx context.Context, domain string, httpsPort, httpPort int, useSelfSigned bool, acmeEmail string, certDir string) error {
+// RunHTTP starts the HTTP server with graceful shutdown.
+func (s *Server) RunHTTP(ctx context.Context, addr string) error {
 	mux := s.BuildMux()
 
-	httpsAddr := fmt.Sprintf(":%d", httpsPort)
-	httpAddr := fmt.Sprintf(":%d", httpPort)
-
-	var tlsConfig *tls.Config
-
-	if useSelfSigned || domain == "" || domain == "localhost" {
-		// Self-signed certificate
-		cert, err := generateSelfSignedCert(domain)
-		if err != nil {
-			return fmt.Errorf("generate self-signed cert: %w", err)
-		}
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-		}
-
-		// Parse the cert to extract info
-		if parsed, err := x509.ParseCertificate(cert.Certificate[0]); err == nil {
-			setCertInfo(&CertInfo{
-				Domain:    domain,
-				Issuer:    parsed.Issuer.CommonName,
-				NotBefore: parsed.NotBefore.Format(time.RFC3339),
-				NotAfter:  parsed.NotAfter.Format(time.RFC3339),
-				Mode:      "self-signed",
-			})
-		}
-
-		log.Printf("[TLS] Using self-signed certificate for %q", domain)
-	} else {
-		// ACME / Let's Encrypt
-		if err := os.MkdirAll(certDir, 0700); err != nil {
-			return fmt.Errorf("create cert cache dir %s: %w", certDir, err)
-		}
-
-		mgr := &autocert.Manager{
-			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(domain),
-			Cache:      autocert.DirCache(certDir),
-			Email:      acmeEmail,
-		}
-
-		tlsConfig = mgr.TLSConfig()
-		tlsConfig.MinVersion = tls.VersionTLS12
-
-		// Wrap GetCertificate to capture cert info on each fetch
-		origGetCert := tlsConfig.GetCertificate
-		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			cert, err := origGetCert(hello)
-			if err != nil {
-				log.Printf("[TLS] ACME GetCertificate error for %q: %v", hello.ServerName, err)
-				return nil, err
-			}
-			if cert != nil && len(cert.Certificate) > 0 {
-				if parsed, parseErr := x509.ParseCertificate(cert.Certificate[0]); parseErr == nil {
-					setCertInfo(&CertInfo{
-						Domain:    domain,
-						Issuer:    parsed.Issuer.CommonName,
-						NotBefore: parsed.NotBefore.Format(time.RFC3339),
-						NotAfter:  parsed.NotAfter.Format(time.RFC3339),
-						Mode:      "acme",
-					})
-				}
-			}
-			return cert, nil
-		}
-
-		log.Printf("[TLS] Using Let's Encrypt ACME for domain %q (email: %s)", domain, acmeEmail)
-		log.Printf("[TLS] Certificate cache: %s", certDir)
-
-		setCertInfo(&CertInfo{
-			Domain: domain,
-			Mode:   "acme",
-			Issuer: "pending (Let's Encrypt)",
-		})
-
-		// Start HTTP server for ACME HTTP-01 challenges + redirect to HTTPS.
-		// mgr.HTTPHandler wraps the fallback: it intercepts challenge requests
-		// and passes everything else to the redirect handler.
-		redirectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			target := "https://" + r.Host + r.URL.RequestURI()
-			http.Redirect(w, r, target, http.StatusMovedPermanently)
-		})
-
-		httpServer := &http.Server{
-			Addr:    httpAddr,
-			Handler: mgr.HTTPHandler(redirectHandler),
-		}
-		go func() {
-			log.Printf("[HTTP] Listening on %s (ACME challenges + HTTPS redirect)", httpAddr)
-			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Printf("[HTTP] Server error: %v", err)
-				if s.onError != nil {
-					s.onError(err, "http_redirect_server")
-				}
-			}
-		}()
-		go func() {
-			<-ctx.Done()
-			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			httpServer.Shutdown(shutCtx)
-		}()
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
 	}
 
-	httpsServer := &http.Server{
-		Addr:      httpsAddr,
-		Handler:   mux,
-		TLSConfig: tlsConfig,
-	}
-
-	ln, err := tls.Listen("tcp", httpsAddr, tlsConfig)
-	if err != nil {
-		return fmt.Errorf("listen HTTPS on %s: %w", httpsAddr, err)
-	}
-
-	log.Printf("[HTTPS] Listening on %s", httpsAddr)
+	log.Printf("[HTTP] Listening on %s", addr)
 
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		httpsServer.Shutdown(shutCtx)
+		server.Shutdown(shutCtx)
 	}()
 
-	return httpsServer.Serve(ln)
+	return server.ListenAndServe()
 }
 
 func (s *Server) handleMessage(data []byte) *JSONRPCResponse {
@@ -382,6 +226,10 @@ func (s *Server) handleNotification(request *JSONRPCRequest) {
 }
 
 func (s *Server) handleRequest(request *JSONRPCRequest) *JSONRPCResponse {
+	if s.onRequest != nil {
+		s.onRequest(request.Method)
+	}
+
 	response := &JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      request.ID,
@@ -402,6 +250,30 @@ func (s *Server) handleRequest(request *JSONRPCRequest) *JSONRPCResponse {
 		} else {
 			response.Result = result
 		}
+	case "resources/list":
+		response.Result = s.handleListResources()
+	case "resources/read":
+		result, err := s.handleReadResource(request.Params)
+		if err != nil {
+			response.Error = &JSONRPCError{
+				Code:    InvalidParams,
+				Message: err.Error(),
+			}
+		} else {
+			response.Result = result
+		}
+	case "prompts/list":
+		response.Result = s.handleListPrompts()
+	case "prompts/get":
+		result, err := s.handleGetPrompt(request.Params)
+		if err != nil {
+			response.Error = &JSONRPCError{
+				Code:    InvalidParams,
+				Message: err.Error(),
+			}
+		} else {
+			response.Result = result
+		}
 	case "ping":
 		response.Result = map[string]interface{}{}
 	default:
@@ -415,11 +287,22 @@ func (s *Server) handleRequest(request *JSONRPCRequest) *JSONRPCResponse {
 }
 
 func (s *Server) handleInitialize() *InitializeResult {
+	caps := ServerCapabilities{
+		Tools: &ToolsCapability{ListChanged: false},
+	}
+	s.mu.RLock()
+	hasResources := len(s.resources) > 0
+	hasPrompts := len(s.prompts) > 0
+	s.mu.RUnlock()
+	if hasResources {
+		caps.Resources = &ResourcesCapability{}
+	}
+	if hasPrompts {
+		caps.Prompts = &PromptsCapability{}
+	}
 	return &InitializeResult{
 		ProtocolVersion: "2024-11-05",
-		Capabilities: ServerCapabilities{
-			Tools: &ToolsCapability{ListChanged: false},
-		},
+		Capabilities:    caps,
 		ServerInfo: ServerInfo{
 			Name:    s.name,
 			Version: s.version,
@@ -431,6 +314,81 @@ func (s *Server) handleListTools() *ListToolsResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return &ListToolsResult{Tools: s.tools}
+}
+
+func (s *Server) handleListResources() *ListResourcesResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return &ListResourcesResult{Resources: s.resources}
+}
+
+func (s *Server) handleReadResource(params interface{}) (*ReadResourceResult, error) {
+	paramsMap, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid params type")
+	}
+	uri, ok := paramsMap["uri"].(string)
+	if !ok || uri == "" {
+		return nil, fmt.Errorf("missing resource URI")
+	}
+
+	s.mu.RLock()
+	handler, exists := s.resourceHandlers[uri]
+	s.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("unknown resource: %s", uri)
+	}
+
+	text, err := handler()
+	if err != nil {
+		return nil, err
+	}
+
+	return &ReadResourceResult{
+		Contents: []ResourceContent{{
+			URI:      uri,
+			MimeType: "application/json",
+			Text:     text,
+		}},
+	}, nil
+}
+
+func (s *Server) handleListPrompts() *ListPromptsResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return &ListPromptsResult{Prompts: s.prompts}
+}
+
+func (s *Server) handleGetPrompt(params interface{}) (*GetPromptResult, error) {
+	paramsMap, ok := params.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid params type")
+	}
+	name, ok := paramsMap["name"].(string)
+	if !ok || name == "" {
+		return nil, fmt.Errorf("missing prompt name")
+	}
+
+	// Extract string arguments
+	args := make(map[string]string)
+	if argsRaw, ok := paramsMap["arguments"].(map[string]interface{}); ok {
+		for k, v := range argsRaw {
+			if s, ok := v.(string); ok {
+				args[k] = s
+			}
+		}
+	}
+
+	s.mu.RLock()
+	handler, exists := s.promptHandlers[name]
+	s.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("unknown prompt: %s", name)
+	}
+
+	return handler(args)
 }
 
 func (s *Server) handleCallTool(params interface{}) (*CallToolResult, error) {
@@ -490,49 +448,6 @@ func (s *Server) handleCallTool(params interface{}) (*CallToolResult, error) {
 	return result, nil
 }
 
-// generateSelfSignedCert creates a self-signed TLS certificate.
-func generateSelfSignedCert(domain string) (tls.Certificate, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Organization: []string{"Go MCP Printer"},
-			CommonName:   domain,
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-
-	if domain == "" || domain == "localhost" {
-		template.IPAddresses = []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
-		template.DNSNames = []string{"localhost"}
-	} else {
-		template.DNSNames = []string{domain}
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	return tls.Certificate{
-		Certificate: [][]byte{certDER},
-		PrivateKey:  key,
-	}, nil
-}
-
 // Version returns the server version.
 func (s *Server) Version() string {
 	return s.version
@@ -548,6 +463,20 @@ func (s *Server) ToolCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.tools)
+}
+
+// ResourceCount returns the number of registered resources.
+func (s *Server) ResourceCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.resources)
+}
+
+// PromptCount returns the number of registered prompts.
+func (s *Server) PromptCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.prompts)
 }
 
 // Tools returns a copy of the registered tools.

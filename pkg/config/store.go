@@ -39,11 +39,8 @@ func Load() (*Config, error) {
 	}
 
 	// Apply defaults for zero values
-	if cfg.HTTPSPort == 0 {
-		cfg.HTTPSPort = 443
-	}
-	if cfg.HTTPPort == 0 {
-		cfg.HTTPPort = 80
+	if cfg.Port == 0 {
+		cfg.Port = 80
 	}
 	if cfg.AdminPort == 0 {
 		cfg.AdminPort = 8787
@@ -59,6 +56,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.LogDir == "" {
 		cfg.LogDir = filepath.Join(DefaultDataDir(), "logs")
+	}
+	if cfg.PhotoPrinters == nil {
+		cfg.PhotoPrinters = []string{"DP-DS820", "DP-QW410"}
 	}
 
 	cached = cfg
@@ -97,10 +97,15 @@ func Save(cfg *Config) error {
 	return nil
 }
 
-// Reload forces a reload of the config from disk.
-func Reload() (*Config, error) {
+// ClearCache clears the cached config so the next Load() reads from disk.
+func ClearCache() {
 	mu.Lock()
 	cached = nil
 	mu.Unlock()
+}
+
+// Reload forces a reload of the config from disk.
+func Reload() (*Config, error) {
+	ClearCache()
 	return Load()
 }
