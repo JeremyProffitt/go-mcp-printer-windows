@@ -131,6 +131,10 @@ func (h *Handler) handlePrinterPaperSizes(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		h.handleClearLogs(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -172,6 +176,28 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.Write([]byte(strings.Join(recent, "\n")))
+}
+
+func (h *Handler) handleClearLogs(w http.ResponseWriter, r *http.Request) {
+	logDir := h.cfg.LogDir
+	if logDir == "" {
+		logDir = config.DefaultConfig().LogDir
+	}
+
+	matches, err := filepath.Glob(filepath.Join(logDir, "*.log"))
+	if err != nil || len(matches) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "no logs to clear"})
+		return
+	}
+
+	for _, f := range matches {
+		os.Truncate(f, 0)
+	}
+
+	h.logger.Info("Logs cleared via admin API")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {

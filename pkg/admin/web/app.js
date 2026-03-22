@@ -314,13 +314,28 @@ const App = {
     },
 
     async showLogs(el) {
-        el.innerHTML = '<div class="card"><h2>Server Logs</h2><div id="log-content" class="log-viewer">Loading...</div></div>';
+        el.innerHTML = '<div class="card"><h2>Server Logs</h2><div style="margin-bottom:12px"><button id="clear-logs" class="btn btn-secondary">Clear Logs</button></div><div id="log-content" class="log-viewer">Loading...</div></div>';
+        document.getElementById('clear-logs').addEventListener('click', () => this.clearLogs());
         try {
             const resp = await fetch('/admin/api/logs');
             const text = await resp.text();
             document.getElementById('log-content').textContent = text || 'No logs available';
         } catch (e) {
             document.getElementById('log-content').textContent = 'Failed to load logs';
+        }
+    },
+
+    async clearLogs() {
+        try {
+            const resp = await fetch('/admin/api/logs', { method: 'DELETE' });
+            if (resp.ok) {
+                this.toast('Logs cleared', 'success');
+                this.showLogs(document.querySelector('.main'));
+            } else {
+                this.toast('Failed to clear logs', 'error');
+            }
+        } catch (e) {
+            this.toast('Error: ' + e.message, 'error');
         }
     },
 
