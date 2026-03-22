@@ -158,15 +158,20 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return last 500 lines
+	// Return last 500 lines, newest first
 	lines := strings.Split(string(data), "\n")
 	start := 0
 	if len(lines) > 500 {
 		start = len(lines) - 500
 	}
+	recent := lines[start:]
+	// Reverse so newest is first
+	for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
+		recent[i], recent[j] = recent[j], recent[i]
+	}
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(strings.Join(lines[start:], "\n")))
+	w.Write([]byte(strings.Join(recent, "\n")))
 }
 
 func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {

@@ -15,6 +15,7 @@ import (
 // systray for Windows GUI thread affinity). Use ctx/cancel for coordinated
 // shutdown with background HTTP servers.
 func Run(ctx context.Context, cancel context.CancelFunc, port, adminPort int) {
+	notifyAdminPort = adminPort
 	systray.Run(func() { onReady(ctx, cancel, port, adminPort) }, func() { onExit(cancel) })
 }
 
@@ -94,17 +95,20 @@ func checkHealth(healthURL string, mStatus *systray.MenuItem) {
 	}
 }
 
-// Notify shows a Windows balloon/toast notification.
+// notifyAdminPort is set by Run so Notify can build the logs URL.
+var notifyAdminPort int
+
+// Notify shows a Windows toast notification. Clicking it opens the admin logs page.
 func Notify(title, message string) {
-	// Use PowerShell to show a Windows toast notification
+	logsURL := fmt.Sprintf("http://localhost:%d/admin/#logs", notifyAdminPort)
 	ps := fmt.Sprintf(
 		`[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; `+
 			`[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null; `+
 			`$xml = [Windows.Data.Xml.Dom.XmlDocument]::new(); `+
-			`$xml.LoadXml('<toast><visual><binding template="ToastText02"><text id="1">%s</text><text id="2">%s</text></binding></visual></toast>'); `+
+			`$xml.LoadXml('<toast activationType="protocol" launch="%s"><visual><binding template="ToastText02"><text id="1">%s</text><text id="2">%s</text></binding></visual></toast>'); `+
 			`$toast = [Windows.UI.Notifications.ToastNotification]::new($xml); `+
 			`[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Go MCP Printer').Show($toast)`,
-		title, message,
+		logsURL, title, message,
 	)
 	exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps).Start()
 }
