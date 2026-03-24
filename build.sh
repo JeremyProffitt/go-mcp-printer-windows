@@ -33,7 +33,7 @@ for PLATFORM in "${PLATFORMS[@]}"; do
     echo "Building for $GOOS/$GOARCH..."
 
     CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
-        -ldflags="-s -w -X main.version=$VERSION" \
+        -ldflags="-s -w -H windowsgui -X main.version=$VERSION" \
         -o "$BUILD_DIR/$OUTPUT_NAME" .
 
     echo "  -> $BUILD_DIR/$OUTPUT_NAME"

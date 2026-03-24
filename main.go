@@ -86,7 +86,6 @@ func runServe() {
 		}
 	} else {
 		logger.Info("Running in foreground mode")
-		hideConsoleWindow()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -263,17 +262,3 @@ func runUninstall() {
 	}
 }
 
-// hideConsoleWindow hides the console window on Windows.
-// This is a no-op on other platforms.
-func hideConsoleWindow() {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	user32 := syscall.NewLazyDLL("user32.dll")
-
-	getConsoleWindow := kernel32.NewProc("GetConsoleWindow")
-	showWindow := user32.NewProc("ShowWindow")
-
-	hwnd, _, _ := getConsoleWindow.Call()
-	if hwnd != 0 {
-		showWindow.Call(hwnd, 0) // SW_HIDE = 0
-	}
-}

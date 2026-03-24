@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"fyne.io/systray"
+
+	"github.com/jeremyje/go-mcp-printer-windows/pkg/startup"
 )
 
 // Run starts the system tray icon. It blocks on the main goroutine (required by
@@ -29,6 +31,9 @@ func onReady(ctx context.Context, cancel context.CancelFunc, port, adminPort int
 	systray.AddSeparator()
 	mStatus := systray.AddMenuItem("Status: Checking...", "Server status")
 	mStatus.Disable()
+	systray.AddSeparator()
+	mAutoStart := systray.AddMenuItemCheckbox("Start on Login", "Start MCP Printer when you log in", startup.AutoStartEnabled())
+	mWatchdog := systray.AddMenuItemCheckbox("Watchdog (10min)", "Check server health every 10 minutes, restart if down", startup.WatchdogEnabled())
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Exit", "Shut down server and exit")
 
@@ -74,6 +79,24 @@ func onReady(ctx context.Context, cancel context.CancelFunc, port, adminPort int
 				openBrowser(adminURL + "/admin/")
 			case <-mLogs.ClickedCh:
 				openBrowser(adminURL + "/admin/#logs")
+			case <-mAutoStart.ClickedCh:
+				enabled := !mAutoStart.Checked()
+				if err := startup.SetAutoStart(enabled); err != nil {
+					Notify("Error", fmt.Sprintf("Failed to set auto-start: %v", err))
+				} else if enabled {
+					mAutoStart.Check()
+				} else {
+					mAutoStart.Uncheck()
+				}
+			case <-mWatchdog.ClickedCh:
+				enabled := !mWatchdog.Checked()
+				if err := startup.SetWatchdog(enabled, port); err != nil {
+					Notify("Error", fmt.Sprintf("Failed to set watchdog: %v", err))
+				} else if enabled {
+					mWatchdog.Check()
+				} else {
+					mWatchdog.Uncheck()
+				}
 			case <-mQuit.ClickedCh:
 				cancel()
 			}
